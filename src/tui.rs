@@ -217,34 +217,6 @@ fn draw_ready_view(f: &mut Frame, area: Rect, nrc: &Nrc, groups: &[openmls::grou
         return;
     }
     
-    // First split for error display if needed
-    let (error_area, main_area) = if nrc.last_error.is_some() {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Min(0)])
-            .split(area);
-        (Some(chunks[0]), chunks[1])
-    } else {
-        (None, area)
-    };
-    
-    // Draw error if present
-    if let (Some(ref error), Some(error_rect)) = (&nrc.last_error, error_area) {
-        let error_block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Double)
-            .border_style(Style::default().fg(Color::Red));
-        
-        let error_text = Paragraph::new(error.as_str())
-            .block(error_block)
-            .style(Style::default().fg(Color::Red))
-            .alignment(Alignment::Center);
-        
-        f.render_widget(error_text, error_rect);
-    }
-    
-    let area = main_area;
-    
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
@@ -281,29 +253,80 @@ fn draw_ready_view(f: &mut Frame, area: Rect, nrc: &Nrc, groups: &[openmls::grou
     
     f.render_widget(list, chunks[0]);
     
-    // Split right side for content and input (4 lines: 1 for flash, 3 for input box)
-    let right_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(4)])
-        .split(chunks[1]);
-    
-    // Check if a chat is selected
-    if let Some(selected_index) = nrc.selected_group_index {
-        if selected_index < groups.len() {
-            // Show messages for the selected chat
-            let selected_group = &groups[selected_index];
-            draw_messages(f, right_chunks[0], nrc, selected_group);
+    // Handle right side layout based on whether there's an error
+    if let Some(ref error) = nrc.last_error {
+        // Calculate how many lines the error needs (with wrapping)
+        let available_width = chunks[1].width.saturating_sub(4) as usize; // Subtract borders and padding
+        let estimated_lines = if available_width > 0 {
+            (error.len() / available_width) + 1
         } else {
-            // Selected index out of bounds, show info
+            1
+        };
+        let error_height = ((estimated_lines + 2) as u16).min(chunks[1].height.saturating_sub(4)); // +2 for borders, leave room for input
+        
+        // Split right side with dynamic error height
+        let right_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(error_height), Constraint::Length(3)])
+            .split(chunks[1]);
+        
+        // Check if a chat is selected for the top area
+        if let Some(selected_index) = nrc.selected_group_index {
+            if selected_index < groups.len() {
+                // Show messages for the selected chat
+                let selected_group = &groups[selected_index];
+                draw_messages(f, right_chunks[0], nrc, selected_group);
+            } else {
+                // Selected index out of bounds, show info
+                draw_info_panel(f, right_chunks[0], nrc);
+            }
+        } else {
+            // No chat selected, show info panel
             draw_info_panel(f, right_chunks[0], nrc);
         }
+        
+        // Draw error above input
+        let error_block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Double)
+            .border_style(Style::default().fg(Color::Red))
+            .title("═ ERROR ═");
+        
+        let error_text = Paragraph::new(error.as_str())
+            .block(error_block)
+            .style(Style::default().fg(Color::Red))
+            .wrap(Wrap { trim: true });
+        
+        f.render_widget(error_text, right_chunks[1]);
+        
+        // Draw input box
+        draw_input(f, right_chunks[2], nrc);
     } else {
-        // No chat selected, show info panel
-        draw_info_panel(f, right_chunks[0], nrc);
+        // No error - use standard layout
+        // Split right side for content and input (3 lines for input box)
+        let right_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(3)])
+            .split(chunks[1]);
+        
+        // Check if a chat is selected
+        if let Some(selected_index) = nrc.selected_group_index {
+            if selected_index < groups.len() {
+                // Show messages for the selected chat
+                let selected_group = &groups[selected_index];
+                draw_messages(f, right_chunks[0], nrc, selected_group);
+            } else {
+                // Selected index out of bounds, show info
+                draw_info_panel(f, right_chunks[0], nrc);
+            }
+        } else {
+            // No chat selected, show info panel
+            draw_info_panel(f, right_chunks[0], nrc);
+        }
+        
+        // Draw input box with optional flash message
+        draw_input_with_flash(f, right_chunks[1], nrc);
     }
-    
-    // Draw input box at bottom right with flash message
-    draw_input_with_flash(f, right_chunks[1], nrc);
 }
 
 
@@ -525,25 +548,23 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 }
 
 fn draw_input_with_flash(f: &mut Frame, area: Rect, nrc: &Nrc) {
-    // Split area for flash message and input
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(3)])
-        .split(area);
-    
-    // Draw flash message or error
+    // Check if we need to show flash message
     if let Some(ref flash) = nrc.flash_message {
+        // Split area for flash message and input  
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Length(2)])
+            .split(area);
+        
         let flash_text = Paragraph::new(flash.as_str())
             .style(Style::default().fg(Color::Green))
             .alignment(Alignment::Center);
         f.render_widget(flash_text, chunks[0]);
-    } else if let Some(ref error) = nrc.last_error {
-        let error_text = Paragraph::new(error.as_str())
-            .style(Style::default().fg(Color::Red))
-            .alignment(Alignment::Center);
-        f.render_widget(error_text, chunks[0]);
+        
+        // Draw input box
+        draw_input(f, chunks[1], nrc);
+    } else {
+        // No flash message, just draw input
+        draw_input(f, area, nrc);
     }
-    
-    // Draw input box
-    draw_input(f, chunks[1], nrc);
 }
