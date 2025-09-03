@@ -53,7 +53,7 @@ impl Nrc {
 
         for relay in relays {
             if let Err(e) = client.add_relay(relay).await {
-                println!("Failed to add relay {}: {}", relay, e);
+                println!("Failed to add relay {relay}: {e}");
             }
         }
 
@@ -149,15 +149,14 @@ impl Nrc {
                 .await
             {
                 if !events.is_empty() {
-                    println!("Found key package on attempt {}", attempt);
+                    println!("Found key package on attempt {attempt}");
                     return Ok(events.into_iter().next().unwrap());
                 }
             }
 
             if attempt % 3 == 0 {
                 println!(
-                    "Attempt {} - key package not found yet for {}",
-                    attempt, pubkey
+                    "Attempt {attempt} - key package not found yet for {pubkey}"
                 );
             }
         }
@@ -324,7 +323,7 @@ impl Nrc {
                 .kind(Kind::from(445u16))
                 .custom_tag(SingleLetterTag::lowercase(Alphabet::H), h_tag_value.clone())
                 .limit(100);
-            println!("Filter: kind=445, h-tag={}", h_tag_value);
+            println!("Filter: kind=445, h-tag={h_tag_value}");
 
             tokio::time::sleep(Duration::from_secs(1)).await;
 
@@ -335,31 +334,27 @@ impl Nrc {
             println!("Fetched {} events from relay", events.len());
 
             for event in events {
-                if let Ok(processing_result) = self.nostr_mls.process_message(&event) {
-                    if let MessageProcessingResult::ApplicationMessage(msg) = processing_result {
-                        if msg.kind == Kind::TextNote {
-                            if let Ok(rumor_event) = self.nostr_mls.get_message(&msg.id) {
-                                if let Some(stored_msg) = rumor_event {
-                                    // Check if we already have this message (by ID) to avoid duplicates
-                                    let messages = self
-                                        .messages
-                                        .entry(group_id.clone())
-                                        .or_insert_with(Vec::new);
-                                    let already_exists = messages.iter().any(|m| {
-                                        m.content == stored_msg.content
-                                            && m.sender == stored_msg.pubkey
-                                            && m.timestamp == stored_msg.created_at
-                                    });
+                if let Ok(MessageProcessingResult::ApplicationMessage(msg)) = self.nostr_mls.process_message(&event) {
+                    if msg.kind == Kind::TextNote {
+                        if let Ok(Some(stored_msg)) = self.nostr_mls.get_message(&msg.id) {
+                            // Check if we already have this message (by ID) to avoid duplicates
+                            let messages = self
+                                .messages
+                                .entry(group_id.clone())
+                                .or_default();
+                            let already_exists = messages.iter().any(|m| {
+                                m.content == stored_msg.content
+                                    && m.sender == stored_msg.pubkey
+                                    && m.timestamp == stored_msg.created_at
+                            });
 
-                                    if !already_exists {
-                                        let message = Message {
-                                            content: stored_msg.content.clone(),
-                                            sender: stored_msg.pubkey,
-                                            timestamp: stored_msg.created_at,
-                                        };
-                                        messages.push(message);
-                                    }
-                                }
+                            if !already_exists {
+                                let message = Message {
+                                    content: stored_msg.content.clone(),
+                                    sender: stored_msg.pubkey,
+                                    timestamp: stored_msg.created_at,
+                                };
+                                messages.push(message);
                             }
                         }
                     }
