@@ -218,9 +218,10 @@ fn draw_ready_view(f: &mut Frame, area: Rect, nrc: &Nrc, groups: &[openmls::grou
         groups
             .iter()
             .enumerate()
-            .map(|(i, _group)| {
-                let content = format!("Chat #{}", i + 1);
-                ListItem::new(content)
+            .map(|(i, group)| {
+                // Get the display name for this chat
+                let display_name = nrc.get_chat_display_name(group);
+                ListItem::new(display_name)
                     .style(if nrc.selected_group_index == Some(i) {
                         Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
                     } else {
@@ -280,18 +281,16 @@ fn draw_messages(f: &mut Frame, area: Rect, nrc: &Nrc, active_group: &openmls::g
         messages
             .iter()
             .flat_map(|msg| {
+                // Get the display name for the sender
+                let sender_name = nrc.get_display_name_for_pubkey(&msg.sender);
                 vec![
                     Line::from(vec![
                         Span::styled(
-                            format!("[{}] ", msg.sender.to_bech32().unwrap_or_else(|_| "unknown".to_string())),
-                            Style::default().fg(Color::Cyan),
+                            format!("{}: ", sender_name),
+                            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
                         ),
-                        Span::styled(
-                            format!("{}", msg.timestamp.as_u64()),
-                            Style::default().fg(Color::DarkGray),
-                        ),
+                        Span::raw(&msg.content),
                     ]),
-                    Line::from(Span::raw(&msg.content)),
                     Line::from(""),
                 ]
             })

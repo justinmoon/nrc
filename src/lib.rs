@@ -735,6 +735,33 @@ impl Nrc {
         self.show_help = false;
     }
     
+    pub fn get_display_name_for_pubkey(&self, pubkey: &PublicKey) -> String {
+        if let Some(profile) = self.profiles.get(pubkey) {
+            if let Some(name) = profile.display_name.as_ref() {
+                if !name.is_empty() {
+                    return name.clone();
+                }
+            }
+            if let Some(name) = profile.name.as_ref() {
+                if !name.is_empty() {
+                    return name.clone();
+                }
+            }
+        }
+        
+        // Fall back to npub if no profile
+        pubkey.to_bech32()
+            .map(|npub| {
+                // Shorten npub for display: npub1abc...xyz
+                if npub.len() > 20 {
+                    format!("{}...{}", &npub[..10], &npub[npub.len()-3..])
+                } else {
+                    npub
+                }
+            })
+            .unwrap_or_else(|_| "Unknown".to_string())
+    }
+    
     pub fn get_chat_display_name(&self, group_id: &GroupId) -> String {
         // Get the other member's display name from their profile
         if let Some(group) = self.groups.get(group_id) {
@@ -744,18 +771,7 @@ impl Nrc {
             // First check if we know the admin (creator) of the group
             for admin in &group.admin_pubkeys {
                 if admin != &our_pubkey {
-                    if let Some(profile) = self.profiles.get(admin) {
-                        if let Some(name) = profile.display_name.as_ref() {
-                            if !name.is_empty() {
-                                return name.clone();
-                            }
-                        }
-                        if let Some(name) = profile.name.as_ref() {
-                            if !name.is_empty() {
-                                return name.clone();
-                            }
-                        }
-                    }
+                    return self.get_display_name_for_pubkey(admin);
                 }
             }
             
@@ -763,21 +779,8 @@ impl Nrc {
             if let Some(messages) = self.messages.get(group_id) {
                 for msg in messages {
                     if msg.sender != our_pubkey {
-                        // Found the other person, get their profile
-                        if let Some(profile) = self.profiles.get(&msg.sender) {
-                            if let Some(name) = profile.display_name.as_ref() {
-                                if !name.is_empty() {
-                                    return name.clone();
-                                }
-                            }
-                            if let Some(name) = profile.name.as_ref() {
-                                if !name.is_empty() {
-                                    return name.clone();
-                                }
-                            }
-                        }
-                        // No profile found, return "Unknown"
-                        return "Unknown".to_string();
+                        // Found the other person
+                        return self.get_display_name_for_pubkey(&msg.sender);
                     }
                 }
             }
