@@ -155,9 +155,7 @@ impl Nrc {
             }
 
             if attempt % 3 == 0 {
-                println!(
-                    "Attempt {attempt} - key package not found yet for {pubkey}"
-                );
+                println!("Attempt {attempt} - key package not found yet for {pubkey}");
             }
         }
 
@@ -334,14 +332,13 @@ impl Nrc {
             println!("Fetched {} events from relay", events.len());
 
             for event in events {
-                if let Ok(MessageProcessingResult::ApplicationMessage(msg)) = self.nostr_mls.process_message(&event) {
+                if let Ok(MessageProcessingResult::ApplicationMessage(msg)) =
+                    self.nostr_mls.process_message(&event)
+                {
                     if msg.kind == Kind::TextNote {
                         if let Ok(Some(stored_msg)) = self.nostr_mls.get_message(&msg.id) {
                             // Check if we already have this message (by ID) to avoid duplicates
-                            let messages = self
-                                .messages
-                                .entry(group_id.clone())
-                                .or_default();
+                            let messages = self.messages.entry(group_id.clone()).or_default();
                             let already_exists = messages.iter().any(|m| {
                                 m.content == stored_msg.content
                                     && m.sender == stored_msg.pubkey
