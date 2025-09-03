@@ -32,7 +32,7 @@ fn draw_onboarding(f: &mut Frame, area: Rect, input: &str, mode: &OnboardingMode
         .title("╔═══ NRC - ONBOARDING ═══╗")
         .borders(Borders::ALL)
         .border_type(BorderType::Double)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(Color::DarkGray));
     
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -111,7 +111,7 @@ fn draw_onboarding(f: &mut Frame, area: Rect, input: &str, mode: &OnboardingMode
                     Block::default()
                         .borders(Borders::ALL)
                         .border_type(BorderType::Rounded)
-                        .border_style(Style::default().fg(Color::Cyan))
+                        .border_style(Style::default().fg(Color::DarkGray))
                 )
                 .style(Style::default().fg(Color::White));
             
@@ -155,7 +155,7 @@ fn draw_onboarding(f: &mut Frame, area: Rect, input: &str, mode: &OnboardingMode
                     Block::default()
                         .borders(Borders::ALL)
                         .border_type(BorderType::Rounded)
-                        .border_style(Style::default().fg(Color::Cyan))
+                        .border_style(Style::default().fg(Color::DarkGray))
                 )
                 .style(Style::default().fg(Color::White));
             
@@ -188,7 +188,7 @@ fn draw_initializing(f: &mut Frame, area: Rect) {
         .title("╔═══ NRC - INITIALIZING ═══╗")
         .borders(Borders::ALL)
         .border_type(BorderType::Double)
-        .border_style(Style::default().fg(Color::Yellow));
+        .border_style(Style::default().fg(Color::DarkGray));
     
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -254,7 +254,7 @@ fn draw_ready_view(f: &mut Frame, area: Rect, nrc: &Nrc, groups: &[openmls::grou
         .title("═══ CHATS ═══")
         .borders(Borders::ALL)
         .border_type(BorderType::Double)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(Color::DarkGray));
     
     let items: Vec<ListItem> = if groups.is_empty() {
         vec![ListItem::new("No chats yet").style(Style::default().fg(Color::DarkGray))]
@@ -312,7 +312,7 @@ fn draw_messages(f: &mut Frame, area: Rect, nrc: &Nrc, active_group: &openmls::g
         .title("═══ CHAT ═══")
         .borders(Borders::ALL)
         .border_type(BorderType::Double)
-        .border_style(Style::default().fg(Color::Green));
+        .border_style(Style::default().fg(Color::DarkGray));
     
     let messages = nrc.get_messages(active_group);
     
@@ -324,19 +324,23 @@ fn draw_messages(f: &mut Frame, area: Rect, nrc: &Nrc, active_group: &openmls::g
     } else {
         messages
             .iter()
-            .flat_map(|msg| {
+            .map(|msg| {
                 // Get the display name for the sender
                 let sender_name = nrc.get_display_name_for_pubkey(&msg.sender);
-                vec![
-                    Line::from(vec![
-                        Span::styled(
-                            format!("{}: ", sender_name),
-                            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-                        ),
-                        Span::raw(&msg.content),
-                    ]),
-                    Line::from(""),
-                ]
+                // Use different colors for different users
+                // Current user gets green, others get cyan
+                let color = if msg.sender == nrc.public_key() {
+                    Color::Green
+                } else {
+                    Color::Cyan
+                };
+                Line::from(vec![
+                    Span::styled(
+                        format!("{}: ", sender_name),
+                        Style::default().fg(color),
+                    ),
+                    Span::raw(&msg.content),
+                ])
             })
             .collect()
     };
@@ -353,7 +357,7 @@ fn draw_input(f: &mut Frame, area: Rect, nrc: &Nrc) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Yellow))
+        .border_style(Style::default().fg(Color::DarkGray))
         .title("═ INPUT ═");
     
     // Create text with a cursor using spans
@@ -376,7 +380,7 @@ fn draw_info_panel(f: &mut Frame, area: Rect, nrc: &Nrc) {
         .title("═══ INFO ═══")
         .borders(Borders::ALL)
         .border_type(BorderType::Double)
-        .border_style(Style::default().fg(Color::Green));
+        .border_style(Style::default().fg(Color::DarkGray));
     
     let info = vec![
         Line::from(""),
@@ -423,7 +427,7 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
         .title("╔═══ HELP ═══╗")
         .borders(Borders::ALL)
         .border_type(BorderType::Double)
-        .border_style(Style::default().fg(Color::Yellow));
+        .border_style(Style::default().fg(Color::DarkGray));
     
     let help_text = vec![
         Line::from(""),
