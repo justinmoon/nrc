@@ -101,8 +101,10 @@ async fn run_app<B: ratatui::backend::Backend>(
 ) -> Result<()> {
     let mut last_tick = Instant::now();
     let mut last_message_fetch = Instant::now();
+    let mut last_welcome_fetch = Instant::now();
     let tick_rate = Duration::from_millis(250);
     let message_fetch_interval = Duration::from_secs(2); // Fetch messages every 2 seconds
+    let welcome_fetch_interval = Duration::from_secs(3); // Fetch welcomes every 3 seconds
     
     loop {
         terminal.draw(|f| tui::draw(f, nrc))?;
@@ -129,6 +131,15 @@ async fn run_app<B: ratatui::backend::Backend>(
                     log::error!("Failed to fetch messages: {}", e);
                 }
                 last_message_fetch = Instant::now();
+            }
+            
+            // Check if we should fetch welcomes (for auto-joining groups)
+            if last_welcome_fetch.elapsed() >= welcome_fetch_interval {
+                // Fetch welcomes to auto-join groups when invited
+                if let Err(e) = nrc.fetch_and_process_welcomes().await {
+                    log::error!("Failed to fetch welcomes: {}", e);
+                }
+                last_welcome_fetch = Instant::now();
             }
         }
     }

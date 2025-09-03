@@ -401,12 +401,17 @@ impl Nrc {
             _ => return Ok(()),
         };
 
+        log::debug!("Fetching messages for {} groups", groups.len());
+        
         for group_id in groups {
             // Get the actual nostr_group_id from storage
-            let group = self
-                .groups
-                .get(&group_id)
-                .ok_or(anyhow::anyhow!("Group not found in storage"))?;
+            let group = match self.groups.get(&group_id) {
+                Some(g) => g,
+                None => {
+                    log::warn!("Group not found in storage: {}", hex::encode(group_id.as_slice()));
+                    continue;
+                }
+            };
             let h_tag_value = hex::encode(group.nostr_group_id);
             log::debug!(
                 "Fetching messages for MLS group: {}, Nostr group: {}",
@@ -428,9 +433,11 @@ impl Nrc {
             log::debug!("Fetched {} events from relay", events.len());
 
             for event in events {
+                log::debug!("Processing event: {}", event.id);
                 if let Ok(MessageProcessingResult::ApplicationMessage(msg)) =
                     with_storage_mut!(self, process_message(&event))
                 {
+                    log::debug!("Got ApplicationMessage, kind: {}", msg.kind);
                     if msg.kind == Kind::TextNote {
                         if let Ok(Some(stored_msg)) = with_storage!(self, get_message(&msg.id)) {
                             // Check if we already have this message (by ID) to avoid duplicates
@@ -447,12 +454,18 @@ impl Nrc {
                                     sender: stored_msg.pubkey,
                                     timestamp: stored_msg.created_at,
                                 };
+                                log::info!("Adding message to group: '{}' from {}", 
+                                    message.content, 
+                                    message.sender.to_bech32().unwrap_or_else(|_| "unknown".to_string())
+                                );
                                 messages.push(message.clone());
                                 
                                 // Fetch profile for this sender if we don't have it
                                 if !self.profiles.contains_key(&message.sender) {
                                     let _ = self.fetch_profile(&message.sender).await;
                                 }
+                            } else {
+                                log::debug!("Message already exists, skipping");
                             }
                         }
                     }
@@ -647,7 +660,32 @@ impl Nrc {
             // Fetch their profile first
             let _ = self.fetch_profile(&pubkey).await;
             
-            // Fetch their key package
+            // IMPORTANT: First check if they already sent us a welcome
+            // This prevents creating duplicate groups
+            log::info!("Checking for existing welcomes before creating group with {}", pubkey_str);
+            let _ = self.fetch_and_process_welcomes().await;
+            
+            // Check if we're already in a group with this person
+            let already_in_group = if let AppState::Ready { ref groups, .. } = self.state {
+                groups.iter().any(|group_id| {
+                    if let Some(group) = self.groups.get(group_id) {
+                        // Check if this person is an admin (creator) of any of our groups
+                        group.admin_pubkeys.contains(&pubkey)
+                    } else {
+                        false
+                    }
+                })
+            } else {
+                false
+            };
+            
+            if already_in_group {
+                self.flash_message = Some(format!("Already in a group with {}", pubkey_str));
+                log::info!("Already in a group with {}, not creating a new one", pubkey_str);
+                return Ok(false);
+            }
+            
+            // If not already in a group, fetch their key package and create one
             match self.fetch_key_package(&pubkey).await {
                 Ok(key_package) => {
                     // Create a group with them
@@ -783,6 +821,108 @@ mod tests {
     use tokio::time::sleep;
 
     #[tokio::test]
+    async fn test_scenario_two_clients_join_and_chat() -> Result<()> {
+        // This test simulates the exact scenario described:
+        // 1. Two clients start up
+        // 2. Each does /j with the other's npub
+        // 3. They exchange messages
+        // 4. Messages should appear on both sides
+        
+        env_logger::init();
+        
+        let temp_dir = std::env::temp_dir();
+        let mut alice = Nrc::new(&temp_dir, true).await?; // Use memory storage for tests
+        let mut bob = Nrc::new(&temp_dir, true).await?; // Use memory storage for tests
+        
+        // Initialize both clients (like pressing "1" to generate keys in onboarding)
+        alice.initialize().await?;
+        bob.initialize().await?;
+        
+        // Wait for key packages to propagate
+        sleep(Duration::from_secs(3)).await;
+        
+        // Alice creates a group with Bob (like typing /j npub...)
+        let bob_npub = bob.public_key().to_bech32()?;
+        alice.process_input(format!("/j {}", bob_npub)).await?;
+        
+        // Wait for welcome to propagate
+        sleep(Duration::from_secs(3)).await;
+        
+        // Bob fetches welcomes and automatically joins the group
+        bob.fetch_and_process_welcomes().await?;
+        
+        // Alice should have a group
+        assert_eq!(alice.get_groups().len(), 1, "Alice should have 1 group");
+        let alice_group = alice.get_groups()[0].clone();
+        
+        // Bob should have a group
+        assert_eq!(bob.get_groups().len(), 1, "Bob should have 1 group");
+        let bob_group = bob.get_groups()[0].clone();
+        
+        // Debug: Check if they're in the same Nostr group
+        let alice_nostr_group = alice.groups.get(&alice_group)
+            .expect("Alice should have group in storage");
+        let bob_nostr_group = bob.groups.get(&bob_group)
+            .expect("Bob should have group in storage");
+        
+        println!("Alice's Nostr group ID: {}", hex::encode(&alice_nostr_group.nostr_group_id));
+        println!("Bob's Nostr group ID: {}", hex::encode(&bob_nostr_group.nostr_group_id));
+        
+        // They should now be in the SAME group!
+        assert_eq!(
+            alice_nostr_group.nostr_group_id, 
+            bob_nostr_group.nostr_group_id,
+            "Alice and Bob should be in the same Nostr group"
+        );
+        
+        // Alice sends a message (like typing text and hitting enter)
+        alice.selected_group_index = Some(0); // Select the first group
+        alice.process_input("Hello Bob!".to_string()).await?;
+        
+        // Wait for message to propagate
+        sleep(Duration::from_secs(3)).await;
+        
+        // Bob fetches messages
+        bob.fetch_and_process_messages().await?;
+        
+        // Bob should see Alice's message
+        let bob_messages = bob.get_messages(&bob_group);
+        assert_eq!(bob_messages.len(), 1, "Bob should see 1 message");
+        assert_eq!(bob_messages[0].content, "Hello Bob!");
+        assert_eq!(bob_messages[0].sender, alice.public_key());
+        
+        // Bob sends a reply
+        bob.selected_group_index = Some(0);
+        bob.process_input("Hi Alice!".to_string()).await?;
+        
+        // Wait for message to propagate
+        sleep(Duration::from_secs(3)).await;
+        
+        // Alice fetches messages
+        alice.fetch_and_process_messages().await?;
+        
+        // Alice should see both messages
+        let alice_messages = alice.get_messages(&alice_group);
+        assert_eq!(alice_messages.len(), 2, "Alice should see 2 messages");
+        
+        // Sort messages by timestamp to ensure order
+        let mut sorted_messages = alice_messages.clone();
+        sorted_messages.sort_by_key(|m| m.timestamp);
+        
+        assert_eq!(sorted_messages[0].content, "Hello Bob!");
+        assert_eq!(sorted_messages[0].sender, alice.public_key());
+        assert_eq!(sorted_messages[1].content, "Hi Alice!");
+        assert_eq!(sorted_messages[1].sender, bob.public_key());
+        
+        // Bob should also see both messages when fetching again
+        bob.fetch_and_process_messages().await?;
+        let bob_messages = bob.get_messages(&bob_group);
+        assert_eq!(bob_messages.len(), 2, "Bob should see 2 messages");
+        
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_two_nrc_instances_exchange_messages() -> Result<()> {
         let temp_dir = std::env::temp_dir();
         let mut alice = Nrc::new(&temp_dir, true).await?; // Use memory storage for tests
@@ -811,7 +951,7 @@ mod tests {
         bob.fetch_and_process_welcomes().await?;
         log::info!("Bob processed welcomes, his groups: {:?}", bob.state);
 
-        alice.send_message(&group_id, "Hello Bob!").await?;
+        alice.send_message(group_id.clone(), "Hello Bob!".to_string()).await?;
         log::info!(
             "Alice sent message to group: {:?}",
             hex::encode(group_id.as_slice())
@@ -820,17 +960,17 @@ mod tests {
         sleep(Duration::from_secs(3)).await;
 
         bob.fetch_and_process_messages().await?;
-        let messages = bob.get_messages(&group_id)?;
+        let messages = bob.get_messages(&group_id);
         log::info!("Bob fetched messages, count: {}", messages.len());
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].content, "Hello Bob!");
 
-        bob.send_message(&group_id, "Hi Alice!").await?;
+        bob.send_message(group_id.clone(), "Hi Alice!".to_string()).await?;
 
         sleep(Duration::from_secs(3)).await;
 
         alice.fetch_and_process_messages().await?;
-        let mut messages = alice.get_messages(&group_id)?;
+        let mut messages = alice.get_messages(&group_id);
         assert_eq!(messages.len(), 2);
 
         // Sort by timestamp since relay order isn't guaranteed
