@@ -1,0 +1,1 @@
+- if you have questions about how nostr+mls works, look at docs/EE.md which is the specification for this protocol

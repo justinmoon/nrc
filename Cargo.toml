@@ -1,0 +1,16 @@
+[package]
+name = "nrc"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+nostr-mls = { path = "/Users/justin/code/nrc/nostr/mls/nostr-mls" }
+nostr-mls-memory-storage = { path = "/Users/justin/code/nrc/nostr/mls/nostr-mls-memory-storage" }
+nostr-mls-storage = { path = "/Users/justin/code/nrc/nostr/mls/nostr-mls-storage" }
+nostr-sdk = { path = "/Users/justin/code/nrc/nostr/crates/nostr-sdk", features = ["nip59"] }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1.0"
+hex = "0.4"
+openmls = { version = "0.7.0", default-features = false }
+
+[dev-dependencies]
