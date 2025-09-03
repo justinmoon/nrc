@@ -5,6 +5,7 @@ use nostr_mls_storage::groups::types as group_types;
 use nostr_sdk::prelude::*;
 use openmls::group::GroupId;
 use std::collections::HashMap;
+use std::str::FromStr;
 use std::time::Duration;
 
 #[derive(Debug, Clone)]
@@ -16,25 +17,39 @@ pub struct Message {
 
 #[derive(Debug, Clone)]
 pub enum AppState {
+    Onboarding {
+        input: String,
+        mode: OnboardingMode,
+    },
     Initializing,
     Ready {
         key_package_published: bool,
         groups: Vec<GroupId>,
     },
-    InGroup {
-        active_group: GroupId,
-        members: Vec<PublicKey>,
-    },
+}
+
+#[derive(Debug, Clone)]
+pub enum OnboardingMode {
+    Choose,
+    GenerateNew,
+    ImportExisting,
 }
 
 pub struct Nrc {
     nostr_mls: NostrMls<NostrMlsMemoryStorage>,
     keys: Keys,
     client: Client,
-    state: AppState,
+    pub state: AppState,
     messages: HashMap<GroupId, Vec<Message>>,
     welcome_rumors: HashMap<PublicKey, UnsignedEvent>,
     groups: HashMap<GroupId, group_types::Group>,
+    pub input: String,
+    pub selected_group_index: Option<usize>,
+    pub scroll_offset: u16,
+    pub last_error: Option<String>,
+    pub flash_message: Option<String>,
+    pub show_help: bool,
+    profiles: HashMap<PublicKey, Metadata>,
 }
 
 impl Nrc {
@@ -53,7 +68,7 @@ impl Nrc {
 
         for relay in relays {
             if let Err(e) = client.add_relay(relay).await {
-                println!("Failed to add relay {relay}: {e}");
+                log::warn!("Failed to add relay {relay}: {e}");
             }
         }
 
@@ -69,10 +84,20 @@ impl Nrc {
             nostr_mls,
             keys,
             client,
-            state: AppState::Initializing,
+            state: AppState::Onboarding {
+                input: String::new(),
+                mode: OnboardingMode::Choose,
+            },
             messages: HashMap::new(),
             welcome_rumors: HashMap::new(),
             groups: HashMap::new(),
+            input: String::new(),
+            selected_group_index: None,
+            scroll_offset: 0,
+            last_error: None,
+            flash_message: None,
+            show_help: false,
+            profiles: HashMap::new(),
         })
     }
 
@@ -149,13 +174,13 @@ impl Nrc {
                 .await
             {
                 if !events.is_empty() {
-                    println!("Found key package on attempt {attempt}");
+                    log::debug!("Found key package on attempt {attempt}");
                     return Ok(events.into_iter().next().unwrap());
                 }
             }
 
             if attempt % 3 == 0 {
-                println!("Attempt {attempt} - key package not found yet for {pubkey}");
+                log::debug!("Attempt {attempt} - key package not found yet for {pubkey}");
             }
         }
 
@@ -168,6 +193,41 @@ impl Nrc {
             .ok_or_else(|| anyhow::anyhow!("No key package found for {} after 10 attempts", pubkey))
     }
 
+    pub async fn create_group(&mut self, name: String) -> Result<GroupId> {
+        let config = NostrGroupConfigData::new(
+            name,
+            "NRC Chat Group".to_string(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://relay.damus.io")?],
+            vec![self.keys.public_key()],
+        );
+        
+        let group_result = self.nostr_mls.create_group(
+            &self.keys.public_key(),
+            vec![],
+            config,
+        )?;
+        let group_id = GroupId::from_slice(group_result.group.mls_group_id.as_slice());
+        
+        self.groups.insert(group_id.clone(), group_result.group);
+        
+        if let AppState::Ready {
+            key_package_published,
+            mut groups,
+        } = self.state.clone()
+        {
+            groups.push(group_id.clone());
+            self.state = AppState::Ready {
+                key_package_published,
+                groups,
+            };
+        }
+        
+        Ok(group_id)
+    }
+    
     pub async fn create_group_with_member(&mut self, key_package: Event) -> Result<GroupId> {
         let config = NostrGroupConfigData::new(
             "Test Group".to_string(),
@@ -258,7 +318,12 @@ impl Nrc {
                     // Get the group info from storage after accepting
                     let group_id = GroupId::from_slice(welcome.mls_group_id.as_slice());
                     if let Ok(Some(group)) = self.nostr_mls.get_group(&group_id) {
-                        self.groups.insert(group_id.clone(), group);
+                        self.groups.insert(group_id.clone(), group.clone());
+                        
+                        // Fetch the profile of the person who invited us (first admin)
+                        if let Some(admin) = group.admin_pubkeys.first() {
+                            let _ = self.fetch_profile(admin).await;
+                        }
                     }
 
                     if let AppState::Ready {
@@ -279,14 +344,16 @@ impl Nrc {
         Ok(())
     }
 
-    pub async fn send_message(&mut self, group_id: &GroupId, content: &str) -> Result<()> {
+    pub async fn send_message(&mut self, group_id: GroupId, content: String) -> Result<()> {
+        let group_id = &group_id;
+        let content = &content;
         let text_note_rumor = EventBuilder::text_note(content).build(self.keys.public_key());
 
         let event = self.nostr_mls.create_message(group_id, text_note_rumor)?;
 
         // Note: merge_pending_commit is already called inside create_message
 
-        println!(
+        log::debug!(
             "Sending message event: id={}, kind={}",
             event.id, event.kind
         );
@@ -301,7 +368,6 @@ impl Nrc {
     pub async fn fetch_and_process_messages(&mut self) -> Result<()> {
         let groups = match &self.state {
             AppState::Ready { groups, .. } => groups.clone(),
-            AppState::InGroup { active_group, .. } => vec![active_group.clone()],
             _ => return Ok(()),
         };
 
@@ -312,7 +378,7 @@ impl Nrc {
                 .get(&group_id)
                 .ok_or(anyhow::anyhow!("Group not found in storage"))?;
             let h_tag_value = hex::encode(group.nostr_group_id);
-            println!(
+            log::debug!(
                 "Fetching messages for MLS group: {}, Nostr group: {}",
                 hex::encode(group_id.as_slice()),
                 h_tag_value
@@ -321,7 +387,7 @@ impl Nrc {
                 .kind(Kind::from(445u16))
                 .custom_tag(SingleLetterTag::lowercase(Alphabet::H), h_tag_value.clone())
                 .limit(100);
-            println!("Filter: kind=445, h-tag={h_tag_value}");
+            log::debug!("Filter: kind=445, h-tag={h_tag_value}");
 
             tokio::time::sleep(Duration::from_secs(1)).await;
 
@@ -329,7 +395,7 @@ impl Nrc {
                 .client
                 .fetch_events(filter, Duration::from_secs(10))
                 .await?;
-            println!("Fetched {} events from relay", events.len());
+            log::debug!("Fetched {} events from relay", events.len());
 
             for event in events {
                 if let Ok(MessageProcessingResult::ApplicationMessage(msg)) =
@@ -351,7 +417,12 @@ impl Nrc {
                                     sender: stored_msg.pubkey,
                                     timestamp: stored_msg.created_at,
                                 };
-                                messages.push(message);
+                                messages.push(message.clone());
+                                
+                                // Fetch profile for this sender if we don't have it
+                                if !self.profiles.contains_key(&message.sender) {
+                                    let _ = self.fetch_profile(&message.sender).await;
+                                }
                             }
                         }
                     }
@@ -362,8 +433,317 @@ impl Nrc {
         Ok(())
     }
 
-    pub fn get_messages(&self, group_id: &GroupId) -> Result<Vec<Message>> {
-        Ok(self.messages.get(group_id).cloned().unwrap_or_default())
+    pub fn get_messages(&self, group_id: &GroupId) -> Vec<Message> {
+        self.messages.get(group_id).cloned().unwrap_or_default()
+    }
+    
+    pub async fn initialize(&mut self) -> Result<()> {
+        self.state = AppState::Initializing;
+        self.publish_key_package().await?;
+        
+        let groups = self.nostr_mls.get_groups()?;
+        let group_ids: Vec<GroupId> = groups.iter().map(|g| g.mls_group_id.clone()).collect();
+        
+        // Store groups in our HashMap for later use
+        for group in groups {
+            self.groups.insert(group.mls_group_id.clone(), group);
+        }
+        
+        self.state = AppState::Ready {
+            key_package_published: true,
+            groups: group_ids,
+        };
+        Ok(())
+    }
+    
+    pub async fn initialize_with_nsec(&mut self, nsec: String) -> Result<()> {
+        let keys = Keys::parse(&nsec)?;
+        self.keys = keys;
+        self.client = Client::builder().signer(self.keys.clone()).build();
+        
+        let relays = [
+            "wss://relay.damus.io",
+            "wss://nos.lol",
+            "wss://relay.nostr.band",
+            "wss://relay.snort.social",
+            "wss://nostr.wine",
+        ];
+        
+        for relay in relays {
+            if let Err(e) = self.client.add_relay(relay).await {
+                log::warn!("Failed to add relay {relay}: {e}");
+            }
+        }
+        
+        self.client.connect().await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        
+        self.initialize().await
+    }
+    
+    pub fn next_group(&mut self) {
+        if let AppState::Ready { ref groups, .. } = self.state {
+            if !groups.is_empty() {
+                self.selected_group_index = Some(
+                    self.selected_group_index
+                        .map(|i| (i + 1) % groups.len())
+                        .unwrap_or(0),
+                );
+            }
+        }
+    }
+    
+    pub fn prev_group(&mut self) {
+        if let AppState::Ready { ref groups, .. } = self.state {
+            if !groups.is_empty() {
+                self.selected_group_index = Some(
+                    self.selected_group_index
+                        .map(|i| if i == 0 { groups.len() - 1 } else { i - 1 })
+                        .unwrap_or(0),
+                );
+            }
+        }
+    }
+    
+    
+    
+    pub fn get_groups(&self) -> Vec<GroupId> {
+        self.groups.keys().cloned().collect()
+    }
+    
+    pub fn get_active_group(&self) -> Option<&GroupId> {
+        if let AppState::Ready { ref groups, .. } = self.state {
+            if let Some(idx) = self.selected_group_index {
+                groups.get(idx)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+    
+    pub async fn process_input(&mut self, input: String) -> Result<bool> {
+        self.last_error = None;
+        self.flash_message = None;
+        
+        // Check if it's a command
+        if input.starts_with("/") {
+            return self.process_command(input).await;
+        }
+        
+        // Otherwise it's a message - send to selected chat
+        if let AppState::Ready { ref groups, .. } = &self.state {
+            if let Some(idx) = self.selected_group_index {
+                if let Some(group_id) = groups.get(idx) {
+                    if let Err(e) = self.send_message(group_id.clone(), input).await {
+                        self.last_error = Some(format!("Failed to send: {}", e));
+                    }
+                }
+            } else {
+                self.last_error = Some("No chat selected".to_string());
+            }
+        }
+        
+        Ok(false)
+    }
+    
+    pub async fn process_command(&mut self, input: String) -> Result<bool> {
+        self.last_error = None;
+        self.flash_message = None;
+        
+        // Handle quit
+        if input == "/quit" || input == "/q" {
+            return Ok(true); // Signal to quit
+        }
+        
+        // Handle npub copy
+        if input == "/npub" || input == "/n" {
+            use clipboard::ClipboardProvider;
+            use clipboard::ClipboardContext;
+            use nostr_sdk::prelude::ToBech32;
+            
+            let npub = self.keys.public_key().to_bech32().unwrap_or_else(|_| "error".to_string());
+            
+            match ClipboardContext::new() {
+                Ok(mut ctx) => {
+                    if let Err(e) = ctx.set_contents(npub.clone()) {
+                        self.last_error = Some(format!("Failed to copy: {}", e));
+                    } else {
+                        self.flash_message = Some(format!("Copied npub to clipboard: {}", npub));
+                    }
+                }
+                Err(e) => {
+                    self.last_error = Some(format!("Clipboard not available: {}", e));
+                }
+            }
+            return Ok(false);
+        }
+        
+        // Handle help command
+        if input == "/help" || input == "/h" {
+            self.show_help = true;
+            return Ok(false);
+        }
+        
+        // Handle navigation commands in Ready state
+        if matches!(self.state, AppState::Ready { .. }) {
+            if input == "/next" {
+                self.next_group();
+                return Ok(false);
+            } else if input == "/prev" {
+                self.prev_group();
+                return Ok(false);
+            }
+        }
+        
+        
+        if input.starts_with("/join ") || input.starts_with("/j ") {
+            let parts: Vec<&str> = input.split_whitespace().collect();
+            if parts.len() < 2 {
+                self.last_error = Some("Usage: /join <npub>".to_string());
+                return Ok(false);
+            }
+            
+            let pubkey_str = parts[1];
+            let pubkey = match PublicKey::from_str(pubkey_str) {
+                Ok(pk) => pk,
+                Err(e) => {
+                    self.last_error = Some(format!("Invalid public key: {}", e));
+                    return Ok(false);
+                }
+            };
+            
+            // Fetch their profile first
+            let _ = self.fetch_profile(&pubkey).await;
+            
+            // Fetch their key package
+            match self.fetch_key_package(&pubkey).await {
+                Ok(key_package) => {
+                    // Create a group with them
+                    match self.create_group_with_member(key_package).await {
+                        Ok(group_id) => {
+                            // Send them the welcome
+                            if let Ok(welcome_rumor) = self.get_welcome_rumor_for(&pubkey) {
+                                let _ = self.send_gift_wrapped_welcome(&pubkey, welcome_rumor).await;
+                            }
+                            
+                            // Update our state to show the new group
+                            if let AppState::Ready { key_package_published, groups } = &self.state {
+                                let mut updated_groups = groups.clone();
+                                if !updated_groups.contains(&group_id) {
+                                    updated_groups.push(group_id);
+                                }
+                                self.state = AppState::Ready {
+                                    key_package_published: *key_package_published,
+                                    groups: updated_groups,
+                                };
+                            }
+                        }
+                        Err(e) => {
+                            self.last_error = Some(format!("Failed to create group: {}", e));
+                        }
+                    }
+                }
+                Err(e) => {
+                    self.last_error = Some(format!("Failed to fetch key package: {}", e));
+                }
+            }
+        } else if input.starts_with("/") {
+            // Unknown command  
+            self.last_error = Some("Commands: /join <npub>, /npub, /next, /prev, /help, /quit".to_string());
+        }
+        // If not a command, it's a regular message - don't set an error
+        
+        Ok(false)
+    }
+    
+    pub fn clear_error(&mut self) {
+        self.last_error = None;
+        self.flash_message = None;
+    }
+    
+    pub fn dismiss_help(&mut self) {
+        self.show_help = false;
+    }
+    
+    pub fn get_chat_display_name(&self, group_id: &GroupId) -> String {
+        // Get the other member's display name from their profile
+        if let Some(group) = self.groups.get(group_id) {
+            // For now, assume it's a 1-on-1 chat
+            let our_pubkey = self.keys.public_key();
+            
+            // First check if we know the admin (creator) of the group
+            for admin in &group.admin_pubkeys {
+                if admin != &our_pubkey {
+                    if let Some(profile) = self.profiles.get(admin) {
+                        if let Some(name) = profile.display_name.as_ref() {
+                            if !name.is_empty() {
+                                return name.clone();
+                            }
+                        }
+                        if let Some(name) = profile.name.as_ref() {
+                            if !name.is_empty() {
+                                return name.clone();
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Otherwise, try to find a member from messages
+            if let Some(messages) = self.messages.get(group_id) {
+                for msg in messages {
+                    if msg.sender != our_pubkey {
+                        // Found the other person, get their profile
+                        if let Some(profile) = self.profiles.get(&msg.sender) {
+                            if let Some(name) = profile.display_name.as_ref() {
+                                if !name.is_empty() {
+                                    return name.clone();
+                                }
+                            }
+                            if let Some(name) = profile.name.as_ref() {
+                                if !name.is_empty() {
+                                    return name.clone();
+                                }
+                            }
+                        }
+                        // No profile found, return "Unknown"
+                        return "Unknown".to_string();
+                    }
+                }
+            }
+        }
+        "Unknown".to_string()
+    }
+    
+    pub async fn fetch_profile(&mut self, pubkey: &PublicKey) -> Result<()> {
+        let filter = Filter::new()
+            .kind(Kind::Metadata)
+            .author(*pubkey)
+            .limit(1);
+        
+        let events = self.client
+            .fetch_events(filter, Duration::from_secs(5))
+            .await?;
+        
+        if let Some(event) = events.first() {
+            if let Ok(metadata) = Metadata::from_json(&event.content) {
+                self.profiles.insert(*pubkey, metadata);
+            }
+        }
+        
+        Ok(())
+    }
+    
+    pub fn get_group_members(&self, group_id: &GroupId) -> Result<Vec<PublicKey>> {
+        // For now, return the current user as the only member
+        // In a real implementation, you'd track members properly  
+        if let Some(_group) = self.groups.get(group_id) {
+            Ok(vec![self.keys.public_key()])
+        } else {
+            Ok(vec![])
+        }
     }
 }
 
@@ -379,11 +759,11 @@ mod tests {
 
         // Publish key packages with time for propagation
         alice.publish_key_package().await?;
-        println!("Alice key package published: {}", alice.public_key());
+        log::info!("Alice key package published: {}", alice.public_key());
         sleep(Duration::from_secs(1)).await;
 
         bob.publish_key_package().await?;
-        println!("Bob key package published: {}", bob.public_key());
+        log::info!("Bob key package published: {}", bob.public_key());
         sleep(Duration::from_secs(1)).await;
 
         let bob_kp = alice.fetch_key_package(&bob.public_key()).await?;
@@ -398,10 +778,10 @@ mod tests {
         sleep(Duration::from_secs(3)).await;
 
         bob.fetch_and_process_welcomes().await?;
-        println!("Bob processed welcomes, his groups: {:?}", bob.state);
+        log::info!("Bob processed welcomes, his groups: {:?}", bob.state);
 
         alice.send_message(&group_id, "Hello Bob!").await?;
-        println!(
+        log::info!(
             "Alice sent message to group: {:?}",
             hex::encode(group_id.as_slice())
         );
@@ -410,7 +790,7 @@ mod tests {
 
         bob.fetch_and_process_messages().await?;
         let messages = bob.get_messages(&group_id)?;
-        println!("Bob fetched messages, count: {}", messages.len());
+        log::info!("Bob fetched messages, count: {}", messages.len());
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].content, "Hello Bob!");
 
