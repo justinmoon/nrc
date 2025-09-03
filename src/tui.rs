@@ -309,7 +309,7 @@ fn draw_ready_view(f: &mut Frame, area: Rect, nrc: &Nrc, groups: &[openmls::grou
 
 fn draw_messages(f: &mut Frame, area: Rect, nrc: &Nrc, active_group: &openmls::group::GroupId) {
     let block = Block::default()
-        .title("═══ MESSAGES ═══")
+        .title("═══ CHAT ═══")
         .borders(Borders::ALL)
         .border_type(BorderType::Double)
         .border_style(Style::default().fg(Color::Green));

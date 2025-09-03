@@ -363,6 +363,8 @@ impl Nrc {
                     } = self.state.clone()
                     {
                         groups.push(group_id.clone());
+                        // Select the newly joined group
+                        self.selected_group_index = Some(groups.len() - 1);
                         self.state = AppState::Ready {
                             key_package_published,
                             groups,
@@ -743,6 +745,8 @@ impl Nrc {
                                 let mut updated_groups = groups.clone();
                                 if !updated_groups.contains(&group_id) {
                                     updated_groups.push(group_id);
+                                    // Select the newly created group
+                                    self.selected_group_index = Some(updated_groups.len() - 1);
                                 }
                                 self.state = AppState::Ready {
                                     key_package_published: *key_package_published,
