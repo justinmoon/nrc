@@ -158,9 +158,11 @@ async fn handle_key_event(key: KeyEvent, nrc: &mut Nrc) -> Result<bool> {
                 OnboardingMode::Choose => {
                     match key.code {
                         KeyCode::Char('1') => {
-                            // Generate new key immediately
-                            nrc.state = AppState::Initializing;
-                            nrc.initialize().await?;
+                            // Move to display name entry
+                            nrc.state = AppState::Onboarding {
+                                input: String::new(),
+                                mode: OnboardingMode::EnterDisplayName,
+                            };
                         }
                         KeyCode::Char('2') => {
                             nrc.state = AppState::Onboarding {
@@ -178,6 +180,37 @@ async fn handle_key_event(key: KeyEvent, nrc: &mut Nrc) -> Result<bool> {
                         KeyCode::Esc => {
                             nrc.state = AppState::Onboarding {
                                 input,
+                                mode: OnboardingMode::Choose,
+                            };
+                        }
+                        _ => {}
+                    }
+                }
+                OnboardingMode::EnterDisplayName => {
+                    let mut new_input = input.clone();
+                    match key.code {
+                        KeyCode::Char(c) => {
+                            new_input.push(c);
+                            nrc.state = AppState::Onboarding {
+                                input: new_input,
+                                mode,
+                            };
+                        }
+                        KeyCode::Backspace => {
+                            new_input.pop();
+                            nrc.state = AppState::Onboarding {
+                                input: new_input,
+                                mode,
+                            };
+                        }
+                        KeyCode::Enter if !new_input.is_empty() => {
+                            // Initialize with the display name
+                            nrc.state = AppState::Initializing;
+                            nrc.initialize_with_display_name(new_input).await?;
+                        }
+                        KeyCode::Esc => {
+                            nrc.state = AppState::Onboarding {
+                                input: String::new(),
                                 mode: OnboardingMode::Choose,
                             };
                         }

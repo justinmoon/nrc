@@ -92,6 +92,50 @@ fn draw_onboarding(f: &mut Frame, area: Rect, input: &str, mode: &OnboardingMode
                 .alignment(Alignment::Center);
             f.render_widget(paragraph, chunks[1]);
         }
+        OnboardingMode::EnterDisplayName => {
+            let content = vec![
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("Enter your display name:", Style::default().fg(Color::Yellow)),
+                ]),
+                Line::from(""),
+            ];
+            
+            let paragraph = Paragraph::new(content)
+                .style(Style::default())
+                .alignment(Alignment::Center);
+            f.render_widget(paragraph, chunks[1]);
+            
+            let input_box = Paragraph::new(input)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
+                        .border_style(Style::default().fg(Color::Cyan))
+                )
+                .style(Style::default().fg(Color::White));
+            
+            let input_area = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(3), Constraint::Min(0)])
+                .split(chunks[2]);
+            
+            f.render_widget(input_box, input_area[0]);
+            
+            let help = vec![
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("[ENTER] ", Style::default().fg(Color::Green)),
+                    Span::raw("Continue"),
+                    Span::raw("  "),
+                    Span::styled("[ESC] ", Style::default().fg(Color::Red)),
+                    Span::raw("Back"),
+                ]),
+            ];
+            
+            let help_text = Paragraph::new(help).alignment(Alignment::Center);
+            f.render_widget(help_text, input_area[1]);
+        }
         OnboardingMode::ImportExisting => {
             let content = vec![
                 Line::from(""),

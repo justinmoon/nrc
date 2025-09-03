@@ -34,6 +34,7 @@ pub enum AppState {
 pub enum OnboardingMode {
     Choose,
     GenerateNew,
+    EnterDisplayName,
     ImportExisting,
 }
 
@@ -499,6 +500,47 @@ impl Nrc {
         Ok(())
     }
     
+    pub async fn initialize_with_display_name(&mut self, display_name: String) -> Result<()> {
+        self.state = AppState::Initializing;
+        
+        // Publish profile with display name
+        self.publish_profile(display_name).await?;
+        
+        // Then publish key package
+        self.publish_key_package().await?;
+        
+        let groups = with_storage!(self, get_groups())?;
+        let group_ids: Vec<GroupId> = groups.iter().map(|g| g.mls_group_id.clone()).collect();
+        
+        // Store groups in our HashMap for later use
+        for group in groups {
+            self.groups.insert(group.mls_group_id.clone(), group);
+        }
+        
+        self.state = AppState::Ready {
+            key_package_published: true,
+            groups: group_ids,
+        };
+        Ok(())
+    }
+    
+    pub async fn publish_profile(&mut self, display_name: String) -> Result<()> {
+        // Create metadata for the profile
+        let metadata = Metadata::new()
+            .display_name(display_name.clone())
+            .name(display_name.clone());
+        
+        // Store it locally too
+        self.profiles.insert(self.keys.public_key(), metadata.clone());
+        
+        // Publish to Nostr
+        let event = EventBuilder::metadata(&metadata).sign(&self.keys).await?;
+        self.client.send_event(&event).await?;
+        
+        log::info!("Published profile with display name: {}", display_name);
+        Ok(())
+    }
+
     pub async fn initialize_with_nsec(&mut self, nsec: String) -> Result<()> {
         let keys = Keys::parse(&nsec)?;
         self.keys = keys;
