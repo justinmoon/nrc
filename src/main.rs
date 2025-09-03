@@ -23,6 +23,10 @@ struct Args {
     /// Data directory for logs and other files
     #[arg(long, default_value = ".")]
     datadir: PathBuf,
+    
+    /// Use memory storage instead of SQLite
+    #[arg(long)]
+    memory: bool,
 }
 
 fn setup_logging(datadir: &PathBuf) -> Result<()> {
@@ -68,9 +72,9 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     
     setup_logging(&args.datadir)?;
-    log::info!("Starting NRC with datadir: {:?}", args.datadir);
+    log::info!("Starting NRC with datadir: {:?}, memory: {}", args.datadir, args.memory);
     
-    let mut nrc = Nrc::new().await?;
+    let mut nrc = Nrc::new(&args.datadir, args.memory).await?;
     
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -96,7 +100,9 @@ async fn run_app<B: ratatui::backend::Backend>(
     nrc: &mut Nrc,
 ) -> Result<()> {
     let mut last_tick = Instant::now();
+    let mut last_message_fetch = Instant::now();
     let tick_rate = Duration::from_millis(250);
+    let message_fetch_interval = Duration::from_secs(2); // Fetch messages every 2 seconds
     
     loop {
         terminal.draw(|f| tui::draw(f, nrc))?;
@@ -115,6 +121,15 @@ async fn run_app<B: ratatui::backend::Backend>(
         
         if last_tick.elapsed() >= tick_rate {
             last_tick = Instant::now();
+            
+            // Check if we should fetch messages
+            if last_message_fetch.elapsed() >= message_fetch_interval {
+                // Fetch messages in the background
+                if let Err(e) = nrc.fetch_and_process_messages().await {
+                    log::error!("Failed to fetch messages: {}", e);
+                }
+                last_message_fetch = Instant::now();
+            }
         }
     }
 }

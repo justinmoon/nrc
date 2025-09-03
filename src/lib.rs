@@ -1,10 +1,12 @@
 use anyhow::Result;
 use nostr_mls::{groups::NostrGroupConfigData, messages::MessageProcessingResult, NostrMls};
 use nostr_mls_memory_storage::NostrMlsMemoryStorage;
+use nostr_mls_sqlite_storage::NostrMlsSqliteStorage;
 use nostr_mls_storage::groups::types as group_types;
 use nostr_sdk::prelude::*;
 use openmls::group::GroupId;
 use std::collections::HashMap;
+use std::path::Path;
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -35,8 +37,31 @@ pub enum OnboardingMode {
     ImportExisting,
 }
 
+enum Storage {
+    Memory(NostrMls<NostrMlsMemoryStorage>),
+    Sqlite(NostrMls<NostrMlsSqliteStorage>),
+}
+
+macro_rules! with_storage {
+    ($self:expr, $method:ident($($args:expr),*)) => {
+        match &$self.storage {
+            Storage::Memory(mls) => mls.$method($($args),*),
+            Storage::Sqlite(mls) => mls.$method($($args),*),
+        }
+    };
+}
+
+macro_rules! with_storage_mut {
+    ($self:expr, $method:ident($($args:expr),*)) => {
+        match &mut $self.storage {
+            Storage::Memory(mls) => mls.$method($($args),*),
+            Storage::Sqlite(mls) => mls.$method($($args),*),
+        }
+    };
+}
+
 pub struct Nrc {
-    nostr_mls: NostrMls<NostrMlsMemoryStorage>,
+    storage: Storage,
     keys: Keys,
     client: Client,
     pub state: AppState,
@@ -53,7 +78,7 @@ pub struct Nrc {
 }
 
 impl Nrc {
-    pub async fn new() -> Result<Self> {
+    pub async fn new(datadir: &Path, use_memory: bool) -> Result<Self> {
         let keys = Keys::generate();
         let client = Client::builder().signer(keys.clone()).build();
 
@@ -77,11 +102,19 @@ impl Nrc {
         // Wait for connections to establish
         tokio::time::sleep(Duration::from_secs(2)).await;
 
-        let storage = NostrMlsMemoryStorage::default();
-        let nostr_mls = NostrMls::new(storage);
+        let storage = if use_memory {
+            log::info!("Using in-memory storage");
+            Storage::Memory(NostrMls::new(NostrMlsMemoryStorage::default()))
+        } else {
+            // Create datadir if it doesn't exist
+            std::fs::create_dir_all(datadir)?;
+            let db_path = datadir.join("nrc.db");
+            log::info!("Using SQLite storage at: {:?}", db_path);
+            Storage::Sqlite(NostrMls::new(NostrMlsSqliteStorage::new(db_path)?))
+        };
 
         Ok(Self {
-            nostr_mls,
+            storage,
             keys,
             client,
             state: AppState::Onboarding {
@@ -119,9 +152,8 @@ impl Nrc {
             RelayUrl::parse("wss://relay.snort.social")?,
             RelayUrl::parse("wss://nostr.wine")?,
         ];
-        let (key_package_content, tags) = self
-            .nostr_mls
-            .create_key_package_for_event(&self.keys.public_key(), relays)?;
+        let (key_package_content, tags) = 
+            with_storage_mut!(self, create_key_package_for_event(&self.keys.public_key(), relays))?;
 
         let event = EventBuilder::new(Kind::from(443u16), key_package_content)
             .tags(tags)
@@ -204,11 +236,11 @@ impl Nrc {
             vec![self.keys.public_key()],
         );
         
-        let group_result = self.nostr_mls.create_group(
+        let group_result = with_storage_mut!(self, create_group(
             &self.keys.public_key(),
             vec![],
-            config,
-        )?;
+            config
+        ))?;
         let group_id = GroupId::from_slice(group_result.group.mls_group_id.as_slice());
         
         self.groups.insert(group_id.clone(), group_result.group);
@@ -239,11 +271,11 @@ impl Nrc {
             vec![self.keys.public_key()],
         );
 
-        let group_result = self.nostr_mls.create_group(
+        let group_result = with_storage_mut!(self, create_group(
             &self.keys.public_key(),
             vec![key_package.clone()],
-            config,
-        )?;
+            config
+        ))?;
 
         let group_id = GroupId::from_slice(group_result.group.mls_group_id.as_slice());
         // Note: merge_pending_commit is already called inside create_group
@@ -308,16 +340,14 @@ impl Nrc {
             if let Ok(unwrapped) = self.client.unwrap_gift_wrap(&gift_wrap).await {
                 if unwrapped.rumor.kind == Kind::from(444u16) {
                     // Process the welcome to add it to pending welcomes
-                    let welcome = self
-                        .nostr_mls
-                        .process_welcome(&gift_wrap.id, &unwrapped.rumor)?;
+                    let welcome = with_storage_mut!(self, process_welcome(&gift_wrap.id, &unwrapped.rumor))?;
 
                     // Accept the welcome to actually join the group
-                    self.nostr_mls.accept_welcome(&welcome)?;
+                    with_storage_mut!(self, accept_welcome(&welcome))?;
 
                     // Get the group info from storage after accepting
                     let group_id = GroupId::from_slice(welcome.mls_group_id.as_slice());
-                    if let Ok(Some(group)) = self.nostr_mls.get_group(&group_id) {
+                    if let Ok(Some(group)) = with_storage!(self, get_group(&group_id)) {
                         self.groups.insert(group_id.clone(), group.clone());
                         
                         // Fetch the profile of the person who invited us (first admin)
@@ -349,7 +379,7 @@ impl Nrc {
         let content = &content;
         let text_note_rumor = EventBuilder::text_note(content).build(self.keys.public_key());
 
-        let event = self.nostr_mls.create_message(group_id, text_note_rumor)?;
+        let event = with_storage_mut!(self, create_message(group_id, text_note_rumor))?;
 
         // Note: merge_pending_commit is already called inside create_message
 
@@ -399,10 +429,10 @@ impl Nrc {
 
             for event in events {
                 if let Ok(MessageProcessingResult::ApplicationMessage(msg)) =
-                    self.nostr_mls.process_message(&event)
+                    with_storage_mut!(self, process_message(&event))
                 {
                     if msg.kind == Kind::TextNote {
-                        if let Ok(Some(stored_msg)) = self.nostr_mls.get_message(&msg.id) {
+                        if let Ok(Some(stored_msg)) = with_storage!(self, get_message(&msg.id)) {
                             // Check if we already have this message (by ID) to avoid duplicates
                             let messages = self.messages.entry(group_id.clone()).or_default();
                             let already_exists = messages.iter().any(|m| {
@@ -441,7 +471,7 @@ impl Nrc {
         self.state = AppState::Initializing;
         self.publish_key_package().await?;
         
-        let groups = self.nostr_mls.get_groups()?;
+        let groups = with_storage!(self, get_groups())?;
         let group_ids: Vec<GroupId> = groups.iter().map(|g| g.mls_group_id.clone()).collect();
         
         // Store groups in our HashMap for later use
@@ -754,8 +784,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_two_nrc_instances_exchange_messages() -> Result<()> {
-        let mut alice = Nrc::new().await?;
-        let mut bob = Nrc::new().await?;
+        let temp_dir = std::env::temp_dir();
+        let mut alice = Nrc::new(&temp_dir, true).await?; // Use memory storage for tests
+        let mut bob = Nrc::new(&temp_dir, true).await?; // Use memory storage for tests
 
         // Publish key packages with time for propagation
         alice.publish_key_package().await?;
