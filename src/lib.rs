@@ -1,9 +1,9 @@
 use anyhow::Result;
-use openmls::group::GroupId;
-use nostr_mls::{NostrMls, groups::NostrGroupConfigData, messages::MessageProcessingResult};
+use nostr_mls::{groups::NostrGroupConfigData, messages::MessageProcessingResult, NostrMls};
 use nostr_mls_memory_storage::NostrMlsMemoryStorage;
 use nostr_mls_storage::groups::types as group_types;
 use nostr_sdk::prelude::*;
+use openmls::group::GroupId;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -40,9 +40,7 @@ pub struct Nrc {
 impl Nrc {
     pub async fn new() -> Result<Self> {
         let keys = Keys::generate();
-        let client = Client::builder()
-            .signer(keys.clone())
-            .build();
+        let client = Client::builder().signer(keys.clone()).build();
 
         // Add multiple relays for redundancy
         let relays = [
@@ -52,15 +50,15 @@ impl Nrc {
             "wss://relay.snort.social",
             "wss://nostr.wine",
         ];
-        
+
         for relay in relays {
             if let Err(e) = client.add_relay(relay).await {
                 println!("Failed to add relay {}: {}", relay, e);
             }
         }
-        
+
         client.connect().await;
-        
+
         // Wait for connections to establish
         tokio::time::sleep(Duration::from_secs(2)).await;
 
@@ -88,7 +86,7 @@ impl Nrc {
             .kind(Kind::from(443u16))
             .author(self.keys.public_key());
         self.client.subscribe(filter, None).await?;
-        
+
         let relays = vec![
             RelayUrl::parse("wss://relay.damus.io")?,
             RelayUrl::parse("wss://nos.lol")?,
@@ -96,11 +94,10 @@ impl Nrc {
             RelayUrl::parse("wss://relay.snort.social")?,
             RelayUrl::parse("wss://nostr.wine")?,
         ];
-        let (key_package_content, tags) = self.nostr_mls.create_key_package_for_event(
-            &self.keys.public_key(),
-            relays,
-        )?;
-        
+        let (key_package_content, tags) = self
+            .nostr_mls
+            .create_key_package_for_event(&self.keys.public_key(), relays)?;
+
         let event = EventBuilder::new(Kind::from(443u16), key_package_content)
             .tags(tags)
             .build(self.keys.public_key())
@@ -108,10 +105,10 @@ impl Nrc {
             .await?;
 
         self.client.send_event(&event).await?;
-        
+
         // Wait a bit to ensure it's published
         tokio::time::sleep(Duration::from_secs(1)).await;
-        
+
         let filter = Filter::new()
             .kind(Kind::GiftWrap)
             .pubkey(self.keys.public_key());
@@ -137,34 +134,40 @@ impl Nrc {
             .kind(Kind::from(443u16))
             .author(*pubkey)
             .limit(1);
-        
+
         // Subscribe to ensure we can fetch events
         self.client.subscribe(filter.clone(), None).await?;
 
         // Give time for event to propagate to relay and retry multiple times
         for attempt in 1..=10 {
             tokio::time::sleep(Duration::from_millis(1500)).await;
-            
+
             // Try to fetch from relay
-            if let Ok(events) = self.client.fetch_events(filter.clone(), Duration::from_secs(5)).await {
+            if let Ok(events) = self
+                .client
+                .fetch_events(filter.clone(), Duration::from_secs(5))
+                .await
+            {
                 if !events.is_empty() {
                     println!("Found key package on attempt {}", attempt);
                     return Ok(events.into_iter().next().unwrap());
                 }
             }
-            
+
             if attempt % 3 == 0 {
-                println!("Attempt {} - key package not found yet for {}", attempt, pubkey);
+                println!(
+                    "Attempt {} - key package not found yet for {}",
+                    attempt, pubkey
+                );
             }
         }
 
         // Last resort: check local database
-        let events = self.client
-            .database()
-            .query(filter)
-            .await?;
+        let events = self.client.database().query(filter).await?;
 
-        events.into_iter().next()
+        events
+            .into_iter()
+            .next()
             .ok_or_else(|| anyhow::anyhow!("No key package found for {} after 10 attempts", pubkey))
     }
 
@@ -184,18 +187,24 @@ impl Nrc {
             vec![key_package.clone()],
             config,
         )?;
-        
+
         let group_id = GroupId::from_slice(group_result.group.mls_group_id.as_slice());
         // Note: merge_pending_commit is already called inside create_group
-        
-        self.groups.insert(group_id.clone(), group_result.group.clone());
+
+        self.groups
+            .insert(group_id.clone(), group_result.group.clone());
 
         if let Some(welcome_rumor) = group_result.welcome_rumors.first() {
             let recipient_pubkey = key_package.pubkey;
-            self.welcome_rumors.insert(recipient_pubkey, welcome_rumor.clone());
+            self.welcome_rumors
+                .insert(recipient_pubkey, welcome_rumor.clone());
         }
 
-        if let AppState::Ready { key_package_published, mut groups } = self.state.clone() {
+        if let AppState::Ready {
+            key_package_published,
+            mut groups,
+        } = self.state.clone()
+        {
             groups.push(group_id.clone());
             self.state = AppState::Ready {
                 key_package_published,
@@ -213,13 +222,13 @@ impl Nrc {
             .ok_or_else(|| anyhow::anyhow!("No welcome rumor found for {}", pubkey))
     }
 
-    pub async fn send_gift_wrapped_welcome(&self, recipient: &PublicKey, welcome_rumor: UnsignedEvent) -> Result<()> {
-        let gift_wrapped = EventBuilder::gift_wrap(
-            &self.keys,
-            recipient,
-            welcome_rumor,
-            None,
-        ).await?;
+    pub async fn send_gift_wrapped_welcome(
+        &self,
+        recipient: &PublicKey,
+        welcome_rumor: UnsignedEvent,
+    ) -> Result<()> {
+        let gift_wrapped =
+            EventBuilder::gift_wrap(&self.keys, recipient, welcome_rumor, None).await?;
 
         self.client.send_event(&gift_wrapped).await?;
         Ok(())
@@ -233,27 +242,33 @@ impl Nrc {
 
         tokio::time::sleep(Duration::from_secs(2)).await;
 
-        let events = self.client.fetch_events(filter, Duration::from_secs(10)).await?;
+        let events = self
+            .client
+            .fetch_events(filter, Duration::from_secs(10))
+            .await?;
 
         for gift_wrap in events {
             if let Ok(unwrapped) = self.client.unwrap_gift_wrap(&gift_wrap).await {
                 if unwrapped.rumor.kind == Kind::from(444u16) {
                     // Process the welcome to add it to pending welcomes
-                    let welcome = self.nostr_mls.process_welcome(
-                        &gift_wrap.id,
-                        &unwrapped.rumor,
-                    )?;
-                    
+                    let welcome = self
+                        .nostr_mls
+                        .process_welcome(&gift_wrap.id, &unwrapped.rumor)?;
+
                     // Accept the welcome to actually join the group
                     self.nostr_mls.accept_welcome(&welcome)?;
-                    
+
                     // Get the group info from storage after accepting
                     let group_id = GroupId::from_slice(welcome.mls_group_id.as_slice());
                     if let Ok(Some(group)) = self.nostr_mls.get_group(&group_id) {
                         self.groups.insert(group_id.clone(), group);
                     }
 
-                    if let AppState::Ready { key_package_published, mut groups } = self.state.clone() {
+                    if let AppState::Ready {
+                        key_package_published,
+                        mut groups,
+                    } = self.state.clone()
+                    {
                         groups.push(group_id.clone());
                         self.state = AppState::Ready {
                             key_package_published,
@@ -268,16 +283,18 @@ impl Nrc {
     }
 
     pub async fn send_message(&mut self, group_id: &GroupId, content: &str) -> Result<()> {
-        let text_note_rumor = EventBuilder::text_note(content)
-            .build(self.keys.public_key());
-        
+        let text_note_rumor = EventBuilder::text_note(content).build(self.keys.public_key());
+
         let event = self.nostr_mls.create_message(group_id, text_note_rumor)?;
-        
+
         // Note: merge_pending_commit is already called inside create_message
-        
-        println!("Sending message event: id={}, kind={}", event.id, event.kind);
+
+        println!(
+            "Sending message event: id={}, kind={}",
+            event.id, event.kind
+        );
         self.client.send_event(&event).await?;
-        
+
         // Don't store locally - we'll fetch it from the relay like other messages
         // This avoids duplicates
 
@@ -293,21 +310,28 @@ impl Nrc {
 
         for group_id in groups {
             // Get the actual nostr_group_id from storage
-            let group = self.groups.get(&group_id).ok_or(anyhow::anyhow!("Group not found in storage"))?;
+            let group = self
+                .groups
+                .get(&group_id)
+                .ok_or(anyhow::anyhow!("Group not found in storage"))?;
             let h_tag_value = hex::encode(group.nostr_group_id);
-            println!("Fetching messages for MLS group: {}, Nostr group: {}", hex::encode(group_id.as_slice()), h_tag_value);
+            println!(
+                "Fetching messages for MLS group: {}, Nostr group: {}",
+                hex::encode(group_id.as_slice()),
+                h_tag_value
+            );
             let filter = Filter::new()
                 .kind(Kind::from(445u16))
-                .custom_tag(
-                    SingleLetterTag::lowercase(Alphabet::H),
-                    h_tag_value.clone()
-                )
+                .custom_tag(SingleLetterTag::lowercase(Alphabet::H), h_tag_value.clone())
                 .limit(100);
             println!("Filter: kind=445, h-tag={}", h_tag_value);
 
             tokio::time::sleep(Duration::from_secs(1)).await;
 
-            let events = self.client.fetch_events(filter, Duration::from_secs(10)).await?;
+            let events = self
+                .client
+                .fetch_events(filter, Duration::from_secs(10))
+                .await?;
             println!("Fetched {} events from relay", events.len());
 
             for event in events {
@@ -317,13 +341,16 @@ impl Nrc {
                             if let Ok(rumor_event) = self.nostr_mls.get_message(&msg.id) {
                                 if let Some(stored_msg) = rumor_event {
                                     // Check if we already have this message (by ID) to avoid duplicates
-                                    let messages = self.messages.entry(group_id.clone()).or_insert_with(Vec::new);
+                                    let messages = self
+                                        .messages
+                                        .entry(group_id.clone())
+                                        .or_insert_with(Vec::new);
                                     let already_exists = messages.iter().any(|m| {
-                                        m.content == stored_msg.content && 
-                                        m.sender == stored_msg.pubkey && 
-                                        m.timestamp == stored_msg.created_at
+                                        m.content == stored_msg.content
+                                            && m.sender == stored_msg.pubkey
+                                            && m.timestamp == stored_msg.created_at
                                     });
-                                    
+
                                     if !already_exists {
                                         let message = Message {
                                             content: stored_msg.content.clone(),
@@ -344,10 +371,7 @@ impl Nrc {
     }
 
     pub fn get_messages(&self, group_id: &GroupId) -> Result<Vec<Message>> {
-        Ok(self.messages
-            .get(group_id)
-            .cloned()
-            .unwrap_or_default())
+        Ok(self.messages.get(group_id).cloned().unwrap_or_default())
     }
 }
 
@@ -365,7 +389,7 @@ mod tests {
         alice.publish_key_package().await?;
         println!("Alice key package published: {}", alice.public_key());
         sleep(Duration::from_secs(1)).await;
-        
+
         bob.publish_key_package().await?;
         println!("Bob key package published: {}", bob.public_key());
         sleep(Duration::from_secs(1)).await;
@@ -375,7 +399,9 @@ mod tests {
         let group_id = alice.create_group_with_member(bob_kp).await?;
 
         let welcome_rumor = alice.get_welcome_rumor_for(&bob.public_key())?;
-        alice.send_gift_wrapped_welcome(&bob.public_key(), welcome_rumor).await?;
+        alice
+            .send_gift_wrapped_welcome(&bob.public_key(), welcome_rumor)
+            .await?;
 
         sleep(Duration::from_secs(3)).await;
 
@@ -383,7 +409,10 @@ mod tests {
         println!("Bob processed welcomes, his groups: {:?}", bob.state);
 
         alice.send_message(&group_id, "Hello Bob!").await?;
-        println!("Alice sent message to group: {:?}", hex::encode(group_id.as_slice()));
+        println!(
+            "Alice sent message to group: {:?}",
+            hex::encode(group_id.as_slice())
+        );
 
         sleep(Duration::from_secs(3)).await;
 
@@ -400,10 +429,10 @@ mod tests {
         alice.fetch_and_process_messages().await?;
         let mut messages = alice.get_messages(&group_id)?;
         assert_eq!(messages.len(), 2);
-        
+
         // Sort by timestamp since relay order isn't guaranteed
         messages.sort_by_key(|m| m.timestamp);
-        
+
         // Verify both messages are present (order may vary)
         let contents: Vec<String> = messages.iter().map(|m| m.content.clone()).collect();
         assert!(contents.contains(&"Hello Bob!".to_string()));
