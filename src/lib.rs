@@ -83,13 +83,13 @@ impl Nrc {
         let keys = Keys::generate();
         let client = Client::builder().signer(keys.clone()).build();
 
-        // Add relay
+        // Add multiple relays for redundancy
         let relays = [
-            // "wss://relay.damus.io",
+            "wss://relay.damus.io",
             "wss://nos.lol",
-            // "wss://relay.nostr.band",
-            // "wss://relay.snort.social",
-            // "wss://nostr.wine",
+            "wss://relay.nostr.band",
+            "wss://relay.snort.social",
+            "wss://nostr.wine",
         ];
 
         for relay in relays {
@@ -147,11 +147,11 @@ impl Nrc {
         self.client.subscribe(filter, None).await?;
 
         let relays = vec![
-            // RelayUrl::parse("wss://relay.damus.io")?,
+            RelayUrl::parse("wss://relay.damus.io")?,
             RelayUrl::parse("wss://nos.lol")?,
-            // RelayUrl::parse("wss://relay.nostr.band")?,
-            // RelayUrl::parse("wss://relay.snort.social")?,
-            // RelayUrl::parse("wss://nostr.wine")?,
+            RelayUrl::parse("wss://relay.nostr.band")?,
+            RelayUrl::parse("wss://relay.snort.social")?,
+            RelayUrl::parse("wss://nostr.wine")?,
         ];
         let (key_package_content, tags) = 
             with_storage_mut!(self, create_key_package_for_event(&self.keys.public_key(), relays))?;
@@ -233,7 +233,7 @@ impl Nrc {
             None,
             None,
             None,
-            vec![RelayUrl::parse("wss://nos.lol")?],
+            vec![RelayUrl::parse("wss://relay.damus.io")?],
             vec![self.keys.public_key()],
         );
         
@@ -549,11 +549,11 @@ impl Nrc {
         self.client = Client::builder().signer(self.keys.clone()).build();
         
         let relays = [
-            // "wss://relay.damus.io",
+            "wss://relay.damus.io",
             "wss://nos.lol",
-            // "wss://relay.nostr.band",
-            // "wss://relay.snort.social",
-            // "wss://nostr.wine",
+            "wss://relay.nostr.band",
+            "wss://relay.snort.social",
+            "wss://nostr.wine",
         ];
         
         for relay in relays {
