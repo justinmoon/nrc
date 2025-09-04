@@ -492,7 +492,7 @@ impl Nrc {
                         .as_mut()
                         .unwrap()
                         .schedule_retry(&op_id, 0)?;
-                    log::warn!("Message send failed, queued for retry: {e}");
+                    log::warn!("Message send failed, queued for retry: {}", e);
                     return Err(e);
                 }
             }
@@ -627,7 +627,7 @@ impl Nrc {
         if self.retry_queue.is_some() {
             log::info!("Checking for pending operations from last session...");
             if let Err(e) = self.process_pending_operations().await {
-                log::error!("Failed to process pending operations: {e}");
+                log::error!("Failed to process pending operations: {}", e);
             }
         }
 
@@ -655,7 +655,7 @@ impl Nrc {
         if self.retry_queue.is_some() {
             log::info!("Checking for pending operations from last session...");
             if let Err(e) = self.process_pending_operations().await {
-                log::error!("Failed to process pending operations: {e}");
+                log::error!("Failed to process pending operations: {}", e);
             }
         }
 
@@ -1073,13 +1073,16 @@ impl Nrc {
                 match execute_result {
                     Ok(()) => {
                         if let Some(event) = self.retry_queue.as_mut().unwrap().complete(&id)? {
-                            log::info!("Completed operation {id}, event: {event:?}");
+                            log::info!("Completed operation {}, event: {:?}", id, event);
                             // Could emit event here if needed
                             if let Some(ref _tx) = self.event_tx {
                                 // Convert SuccessEvent to AppEvent if needed
-                                if let SuccessEvent::MessageSent { .. } = event {
-                                    self.flash_message =
-                                        Some("Queued message sent successfully".to_string());
+                                match event {
+                                    SuccessEvent::MessageSent { .. } => {
+                                        self.flash_message =
+                                            Some("Queued message sent successfully".to_string());
+                                    }
+                                    _ => {}
                                 }
                             }
                         }
@@ -1108,7 +1111,7 @@ impl Nrc {
             // Clean up operations older than 7 days
             let count = retry_queue.cleanup_old(7 * 24 * 60 * 60)?;
             if count > 0 {
-                log::info!("Cleaned up {count} old operations");
+                log::info!("Cleaned up {} old operations", count);
             }
         }
         Ok(())
