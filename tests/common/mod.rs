@@ -65,7 +65,6 @@ impl TestClient {
         Ok(())
     }
 
-
     /// Navigate to previous group using arrow key
     pub fn send_arrow_up(&self) -> Result<()> {
         self.event_tx
@@ -88,7 +87,6 @@ impl TestClient {
         }
         Ok(())
     }
-
 
     /// Process events from the event queue (simulates event loop)
     pub async fn process_pending_events(&self) -> Result<()> {
