@@ -1,10 +1,9 @@
 use anyhow::Result;
-use nostr_mls::{groups::NostrGroupConfigData, NostrMls};
-use nostr_mls_memory_storage::NostrMlsMemoryStorage;
-use nostr_mls_sqlite_storage::NostrMlsSqliteStorage;
+use nostr_mls::groups::NostrGroupConfigData;
 use nostr_sdk::prelude::*;
 use openmls::group::GroupId;
 use std::collections::HashMap;
+use std::str::FromStr;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -58,8 +57,8 @@ impl NetworkState {
         recipient: PublicKey,
         welcome_rumor: UnsignedEvent,
     ) -> Result<()> {
-        let gift_wrap = EventBuilder::gift_wrap(&self.keys, &recipient, welcome_rumor, None)?;
-        self.client.send_event(gift_wrap).await?;
+        let gift_wrap = EventBuilder::gift_wrap(&self.keys, &recipient, welcome_rumor, None).await?;
+        self.client.send_event(&gift_wrap).await?;
         tokio::time::sleep(Duration::from_millis(200)).await;
         Ok(())
     }
@@ -70,8 +69,8 @@ pub async fn spawn_network_task(
     event_tx: mpsc::UnboundedSender<AppEvent>,
     mut state: NetworkState,
 ) {
-    tokio::spawn(async move {
-        while let Some(command) = command_rx.recv().await {
+    // Run directly instead of spawning to avoid Send issues with NostrMlsSqliteStorage
+    while let Some(command) = command_rx.recv().await {
             match command {
                 NetworkCommand::PublishKeyPackage => {
                     match publish_key_package(&mut state).await {
@@ -151,7 +150,6 @@ pub async fn spawn_network_task(
                 }
             }
         }
-    });
 }
 
 async fn publish_key_package(state: &mut NetworkState) -> Result<()> {
@@ -259,18 +257,16 @@ async fn join_group(state: &mut NetworkState, npub: String) -> Result<GroupId> {
 }
 
 async fn send_message(state: &mut NetworkState, group_id: GroupId, content: String) -> Result<()> {
-    let message = with_storage_mut!(state, create_message(
-        &state.keys.public_key(),
-        group_id.as_slice().to_vec(),
-        content.as_bytes().to_vec()
-    ))?;
+    let text_note_rumor = EventBuilder::text_note(&content).build(state.keys.public_key());
     
-    let rumor = EventBuilder::new(Kind::from(444u16), message.rumor.rumor_content.clone())
-        .tags(message.rumor.rumor_tags.clone())
-        .build_unsigned(state.keys.public_key());
-
-    let gift_wrap = EventBuilder::gift_wrap(&state.keys, &state.keys.public_key(), rumor, None)?;
-    state.client.send_event(gift_wrap).await?;
+    let event = with_storage_mut!(state, create_message(&group_id, text_note_rumor))?;
+    
+    log::debug!(
+        "Sending message event: id={}, kind={}",
+        event.id,
+        event.kind
+    );
+    state.client.send_event(&event).await?;
     
     Ok(())
 }
@@ -290,31 +286,44 @@ async fn fetch_and_process_messages(
         .await?;
 
     for event in events {
-        if event.kind() != Kind::GiftWrap {
+        if event.kind != Kind::GiftWrap {
             continue;
         }
 
-        match state.client.unwrap_gift_wrap(&state.keys, &event).await {
+        match state.client.unwrap_gift_wrap(&event).await {
             Ok(unwrapped_gift) => {
                 if unwrapped_gift.rumor.kind != Kind::from(444u16) {
                     continue;
                 }
 
-                match with_storage_mut!(state, process_message(
-                    &state.keys.public_key(),
-                    unwrapped_gift.rumor.content.clone(),
-                    unwrapped_gift.rumor.tags
-                )) {
-                    Ok(msg) => {
-                        if let Some(group_id) = msg.group_id {
-                            let group_id = GroupId::from_slice(&group_id);
-                            let message = Message {
-                                content: String::from_utf8_lossy(&msg.message).to_string(),
-                                sender: unwrapped_gift.sender,
-                                timestamp: unwrapped_gift.rumor.created_at,
-                            };
-                            let _ = event_tx.send(AppEvent::MessageReceived { group_id, message });
+                // Convert the unwrapped gift back to an Event for processing
+                let rumor_event = Event::new(
+                    event.id,
+                    unwrapped_gift.sender,
+                    unwrapped_gift.rumor.created_at,
+                    unwrapped_gift.rumor.kind,
+                    unwrapped_gift.rumor.tags,
+                    unwrapped_gift.rumor.content,
+                    Signature::from_str("0000000000000000000000000000000000000000000000000000000000000000").unwrap()
+                );
+                
+                match with_storage_mut!(state, process_message(&rumor_event)) {
+                    Ok(nostr_mls::messages::MessageProcessingResult::ApplicationMessage(msg)) => {
+                        if msg.kind == Kind::TextNote {
+                            if let Ok(Some(stored_msg)) = with_storage!(state, get_message(&msg.id)) {
+                                let group_id = stored_msg.mls_group_id.clone();
+                                let message = Message {
+                                    content: stored_msg.content.clone(),
+                                    sender: stored_msg.pubkey,
+                                    timestamp: stored_msg.created_at,
+                                };
+                                let _ = event_tx.send(AppEvent::MessageReceived { group_id, message });
+                            }
                         }
+                    }
+                    Ok(_) => {
+                        // Other message types we don't handle yet
+                        log::debug!("Received non-application message");
                     }
                     Err(e) => {
                         log::debug!("Failed to process message: {}", e);
@@ -345,24 +354,30 @@ async fn fetch_and_process_welcomes(
         .await?;
 
     for event in events {
-        if event.kind() != Kind::GiftWrap {
+        if event.kind != Kind::GiftWrap {
             continue;
         }
 
-        match state.client.unwrap_gift_wrap(&state.keys, &event).await {
+        match state.client.unwrap_gift_wrap(&event).await {
             Ok(unwrapped_gift) => {
                 if unwrapped_gift.rumor.kind != Kind::from(444u16) {
                     continue;
                 }
 
-                if let Ok(result) = with_storage_mut!(state, process_welcome(
-                    &state.keys.public_key(),
-                    unwrapped_gift.rumor.content.clone(),
-                    unwrapped_gift.rumor.tags
+                if let Ok(welcome) = with_storage_mut!(state, process_welcome(
+                    &event.id,
+                    &unwrapped_gift.rumor
                 )) {
-                    let group_id = GroupId::from_slice(&result.group.mls_group_id);
-                    state.groups.insert(group_id.clone(), result.group);
-                    let _ = event_tx.send(AppEvent::GroupCreated { group_id });
+                    // Accept the welcome to join the group
+                    if let Ok(()) = with_storage_mut!(state, accept_welcome(&welcome)) {
+                        let group_id = welcome.mls_group_id.clone();
+                        
+                        // Get the group info from storage after accepting
+                        if let Ok(Some(group)) = with_storage!(state, get_group(&group_id)) {
+                            state.groups.insert(group_id.clone(), group.clone());
+                            let _ = event_tx.send(AppEvent::GroupCreated { group_id });
+                        }
+                    }
                 }
             }
             Err(e) => {
