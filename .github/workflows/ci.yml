@@ -69,8 +69,11 @@ jobs:
       - name: Run clippy
         run: just clippy
 
-      - name: Install nostr-rs-relay
-        run: cargo install nostr-rs-relay
+      - name: Install protoc and nostr-rs-relay
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+          cargo install nostr-rs-relay
 
       - name: Run tests
         run: just test
