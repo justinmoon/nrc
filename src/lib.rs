@@ -974,7 +974,7 @@ impl Nrc {
                 if let Ok(Some(stored_msg)) = with_storage!(self, get_message(&msg.id)) {
                     // Find which group this belongs to based on the h tag
                     for (group_id, group) in &self.groups {
-                        let h_tag_value = hex::encode(&group.nostr_group_id);
+                        let h_tag_value = hex::encode(group.nostr_group_id);
 
                         // Check if this message belongs to this group
                         let belongs_to_group = event.tags.iter().any(|tag| {
@@ -1145,11 +1145,11 @@ mod tests {
 
         println!(
             "Alice's Nostr group ID: {}",
-            hex::encode(&alice_nostr_group.nostr_group_id)
+            hex::encode(alice_nostr_group.nostr_group_id)
         );
         println!(
             "Bob's Nostr group ID: {}",
-            hex::encode(&bob_nostr_group.nostr_group_id)
+            hex::encode(bob_nostr_group.nostr_group_id)
         );
 
         // They should now be in the SAME group!
