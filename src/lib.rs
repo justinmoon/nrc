@@ -150,7 +150,9 @@ impl Nrc {
             std::fs::create_dir_all(datadir)?;
             let db_path = datadir.join("nrc.db");
             log::info!("Using SQLite storage at: {:?}", db_path);
-            Storage::Sqlite(Box::new(NostrMls::new(NostrMlsSqliteStorage::new(db_path)?)))
+            Storage::Sqlite(Box::new(NostrMls::new(NostrMlsSqliteStorage::new(
+                db_path,
+            )?)))
         };
 
         Ok(Self {
