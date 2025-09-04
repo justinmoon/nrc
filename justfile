@@ -27,6 +27,16 @@ act-ci fresh='':
         ./scripts/act-ci.sh
     fi
 
+# Run a client with a fresh temporary directory
+run client-name *args='':
+    #!/bin/bash
+    set -e
+    tmpdir="/tmp/{{client-name}}"
+    echo "Setting up client '{{client-name}}' at ${tmpdir} (95% confidence)"
+    rm -rf "${tmpdir}" 2>/dev/null || true
+    mkdir -p "${tmpdir}"
+    cargo run -- --datadir "${tmpdir}" {{args}}
+
 # Default recipe (show available commands)
 default:
     @just --list
