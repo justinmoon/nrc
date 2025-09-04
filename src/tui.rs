@@ -128,7 +128,17 @@ fn draw_onboarding(f: &mut Frame, area: Rect, input: &str, mode: &OnboardingMode
                 .constraints([Constraint::Length(3), Constraint::Min(0)])
                 .split(chunks[2]);
 
-            f.render_widget(input_box, input_area[0]);
+            // Center the input box and limit its width for display name (30-40 chars wide)
+            let centered_input = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Percentage(35),  // left padding
+                    Constraint::Percentage(30),  // input box width
+                    Constraint::Percentage(35),  // right padding
+                ])
+                .split(input_area[0]);
+
+            f.render_widget(input_box, centered_input[1]);
 
             let help = vec![
                 Line::from(""),
