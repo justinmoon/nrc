@@ -149,7 +149,7 @@ impl Nrc {
             // Create datadir if it doesn't exist
             std::fs::create_dir_all(datadir)?;
             let db_path = datadir.join("nrc.db");
-            log::info!("Using SQLite storage at: {:?}", db_path);
+            log::info!("Using SQLite storage at: {db_path:?}");
             Storage::Sqlite(Box::new(NostrMls::new(NostrMlsSqliteStorage::new(
                 db_path,
             )?)))
@@ -590,7 +590,7 @@ impl Nrc {
         let event = EventBuilder::metadata(&metadata).sign(&self.keys).await?;
         self.client.send_event(&event).await?;
 
-        log::info!("Published profile with display name: {}", display_name);
+        log::info!("Published profile with display name: {display_name}");
         Ok(())
     }
 
@@ -693,7 +693,7 @@ impl Nrc {
             if let Some(idx) = self.selected_group_index {
                 if let Some(group_id) = groups.get(idx) {
                     if let Err(e) = self.send_message(group_id.clone(), input).await {
-                        self.last_error = Some(format!("Failed to send: {}", e));
+                        self.last_error = Some(format!("Failed to send: {e}"));
                     }
                 }
             } else {
@@ -728,13 +728,13 @@ impl Nrc {
             match ClipboardContext::new() {
                 Ok(mut ctx) => {
                     if let Err(e) = ctx.set_contents(npub.clone()) {
-                        self.last_error = Some(format!("Failed to copy: {}", e));
+                        self.last_error = Some(format!("Failed to copy: {e}"));
                     } else {
-                        self.flash_message = Some(format!("Copied npub to clipboard: {}", npub));
+                        self.flash_message = Some(format!("Copied npub to clipboard: {npub}"));
                     }
                 }
                 Err(e) => {
-                    self.last_error = Some(format!("Clipboard not available: {}", e));
+                    self.last_error = Some(format!("Clipboard not available: {e}"));
                 }
             }
             return Ok(false);
@@ -768,7 +768,7 @@ impl Nrc {
             let pubkey = match PublicKey::from_str(pubkey_str) {
                 Ok(pk) => pk,
                 Err(e) => {
-                    self.last_error = Some(format!("Invalid public key: {}", e));
+                    self.last_error = Some(format!("Invalid public key: {e}"));
                     return Ok(false);
                 }
             };
@@ -778,10 +778,7 @@ impl Nrc {
 
             // IMPORTANT: First check if they already sent us a welcome
             // This prevents creating duplicate groups
-            log::info!(
-                "Checking for existing welcomes before creating group with {}",
-                pubkey_str
-            );
+            log::info!("Checking for existing welcomes before creating group with {pubkey_str}");
             let _ = self.fetch_and_process_welcomes().await;
 
             // Check if we're already in a group with this person
@@ -799,11 +796,8 @@ impl Nrc {
             };
 
             if already_in_group {
-                self.flash_message = Some(format!("Already in a group with {}", pubkey_str));
-                log::info!(
-                    "Already in a group with {}, not creating a new one",
-                    pubkey_str
-                );
+                self.flash_message = Some(format!("Already in a group with {pubkey_str}"));
+                log::info!("Already in a group with {pubkey_str}, not creating a new one");
                 return Ok(false);
             }
 
@@ -825,11 +819,11 @@ impl Nrc {
                                     if let Err(e) =
                                         self.send_gift_wrapped_welcome(&pubkey, welcome_rumor).await
                                     {
-                                        log::error!("Failed to send welcome: {}", e);
+                                        log::error!("Failed to send welcome: {e}");
                                     }
                                 }
                                 Err(e) => {
-                                    log::error!("Failed to get welcome rumor: {}", e);
+                                    log::error!("Failed to get welcome rumor: {e}");
                                 }
                             }
 
@@ -852,12 +846,12 @@ impl Nrc {
                             }
                         }
                         Err(e) => {
-                            self.last_error = Some(format!("Failed to create group: {}", e));
+                            self.last_error = Some(format!("Failed to create group: {e}"));
                         }
                     }
                 }
                 Err(e) => {
-                    self.last_error = Some(format!("Failed to fetch key package: {}", e));
+                    self.last_error = Some(format!("Failed to fetch key package: {e}"));
                 }
             }
         } else if input.starts_with("/") {
@@ -1078,12 +1072,12 @@ impl Nrc {
                         }
                     }
                     Err(e) => {
-                        log::debug!("Not a welcome or already processed: {}", e);
+                        log::debug!("Not a welcome or already processed: {e}");
                     }
                 }
             }
             Err(e) => {
-                log::debug!("Failed to unwrap gift wrap: {}", e);
+                log::debug!("Failed to unwrap gift wrap: {e}");
             }
         }
 
@@ -1119,7 +1113,7 @@ mod tests {
 
         // Alice creates a group with Bob (like typing /j npub...)
         let bob_npub = bob.public_key().to_bech32()?;
-        alice.process_input(format!("/j {}", bob_npub)).await?;
+        alice.process_input(format!("/j {bob_npub}")).await?;
 
         // Wait for welcome to propagate
         sleep(Duration::from_secs(3)).await;

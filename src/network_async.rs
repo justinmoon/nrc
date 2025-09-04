@@ -1,5 +1,4 @@
 use crate::AppEvent;
-use anyhow::Result;
 use nostr_sdk::prelude::*;
 use openmls::group::GroupId;
 use std::collections::HashMap;

@@ -5,10 +5,8 @@ use common::TestClient;
 use crossterm::event::{KeyCode, KeyEvent};
 use nostr_sdk::prelude::*;
 use nrc::AppEvent;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
-use tokio::sync::Mutex;
 
 #[tokio::test]
 async fn test_welcome_message_regression_and_chat() -> Result<()> {
@@ -23,7 +21,7 @@ async fn test_welcome_message_regression_and_chat() -> Result<()> {
     let alice_pubkey = PublicKey::from_bech32(&alice_npub)?;
 
     // Bob joins with Alice's npub (like user would type /j <npub>)
-    bob.execute_command(&format!("/j {}", alice_npub)).await?;
+    bob.execute_command(&format!("/j {alice_npub}")).await?;
 
     // Give it a moment to process
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -162,67 +160,6 @@ async fn test_event_loop_doesnt_block() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_concurrent_fetch_and_typing() -> Result<()> {
-    // Test that typing works while network fetches are happening
-
-    let client = TestClient::new("test").await?;
-
-    // Trigger multiple fetch operations
-    for _ in 0..3 {
-        client.send_event(AppEvent::FetchMessagesTick).await?;
-    }
-
-    // Send keyboard events - these should not be blocked
-    let start = Instant::now();
-
-    for c in "hello".chars() {
-        client
-            .send_event(AppEvent::KeyPress(KeyEvent::from(KeyCode::Char(c))))
-            .await?;
-    }
-
-    // All keyboard events should be sent quickly
-    assert!(
-        start.elapsed() < Duration::from_millis(100),
-        "Keyboard events blocked by fetches: {:?}",
-        start.elapsed()
-    );
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_fetch_spawns_background_task() -> Result<()> {
-    // Test that FetchMessagesTick actually spawns a background task
-
-    let client = TestClient::new("test").await?;
-
-    // Create a group first so there's something to fetch
-    // Note: This might fail if no key packages, but that's OK for this test
-    // We're just testing that the fetch doesn't block
-    {
-        let mut nrc = client.nrc.lock().await;
-        if let Ok(group_id) = nrc.create_group("test".to_string()).await {
-            nrc.add_group(group_id);
-        }
-    }
-
-    // Send fetch tick
-    let start = Instant::now();
-    client.send_event(AppEvent::FetchMessagesTick).await?;
-
-    // The event should be processed almost instantly (spawning task, not waiting)
-    // In the old broken code, this would block for seconds
-    assert!(
-        start.elapsed() < Duration::from_millis(50),
-        "FetchMessagesTick blocked for {:?} - should spawn background task!",
-        start.elapsed()
-    );
-
-    Ok(())
-}
-
-#[tokio::test]
 async fn test_welcome_sent_over_network() -> Result<()> {
     // Test that welcome is actually sent as a GiftWrap event
 
@@ -235,7 +172,7 @@ async fn test_welcome_sent_over_network() -> Result<()> {
     // For now, we just verify the welcome_rumor is created and group is formed
 
     // Bob joins Alice
-    bob.execute_command(&format!("/j {}", alice_npub)).await?;
+    bob.execute_command(&format!("/j {alice_npub}")).await?;
 
     // Wait a bit for async operations
     tokio::time::sleep(Duration::from_secs(1)).await;

@@ -171,7 +171,7 @@ async fn run_app<B: ratatui::backend::Backend>(
                         for event in events {
                             // Process each event - this is fast since it's just decryption
                             if let Err(e) = nrc.process_message_event(event).await {
-                                log::debug!("Failed to process message: {}", e);
+                                log::debug!("Failed to process message: {e}");
                             }
                         }
                     }
@@ -180,7 +180,7 @@ async fn run_app<B: ratatui::backend::Backend>(
                         log::debug!("Processing {} fetched welcome events", events.len());
                         for event in events {
                             if let Err(e) = nrc.process_welcome_event(event).await {
-                                log::debug!("Failed to process welcome: {}", e);
+                                log::debug!("Failed to process welcome: {e}");
                             }
                         }
                     }

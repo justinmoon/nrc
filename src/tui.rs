@@ -372,7 +372,7 @@ fn draw_messages(f: &mut Frame, area: Rect, nrc: &Nrc, active_group: &openmls::g
                     Color::Cyan
                 };
                 Line::from(vec![
-                    Span::styled(format!("{}: ", sender_name), Style::default().fg(color)),
+                    Span::styled(format!("{sender_name}: "), Style::default().fg(color)),
                     Span::raw(&msg.content),
                 ])
             })
