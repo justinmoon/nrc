@@ -7,7 +7,7 @@ mod timer_task;
 use anyhow::Result;
 use clap::Parser;
 use crossterm::{
-    event::{KeyCode, KeyEvent, KeyModifiers},
+    event::{DisableBracketedPaste, EnableBracketedPaste, KeyCode, KeyEvent, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -84,14 +84,14 @@ async fn main() -> Result<()> {
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
     let res = run_app(&mut terminal, &mut nrc).await;
 
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableBracketedPaste)?;
     terminal.show_cursor()?;
 
     if let Err(err) = res {
@@ -132,6 +132,9 @@ async fn run_app<B: ratatui::backend::Backend>(
                         if handle_key_press(nrc, key, &command_tx).await? {
                             return Ok(()); // Quit
                         }
+                    }
+                    AppEvent::Paste(text) => {
+                        handle_paste(nrc, text);
                     }
                     AppEvent::MessageReceived { group_id, message } => {
                         nrc.add_message(group_id, message);
@@ -201,6 +204,18 @@ async fn run_app<B: ratatui::backend::Backend>(
     }
 
     Ok(())
+}
+
+fn handle_paste(nrc: &mut Nrc, text: String) {
+    // Only handle paste in Ready state
+    if matches!(nrc.state, AppState::Ready { .. }) {
+        nrc.input.push_str(&text);
+        nrc.clear_error(); // Clear error on new input
+        log::debug!("Pasted text: '{}', Input now: '{}'", text, nrc.input);
+    } else if let AppState::Onboarding { ref mut input, .. } = nrc.state {
+        // Also handle paste during onboarding
+        input.push_str(&text);
+    }
 }
 
 async fn handle_key_press(

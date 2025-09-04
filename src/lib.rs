@@ -16,6 +16,7 @@ use tokio::sync::mpsc;
 pub enum AppEvent {
     // UI Events
     KeyPress(KeyEvent),
+    Paste(String),
 
     // Network Events (from background task)
     MessageReceived { group_id: GroupId, message: Message },
