@@ -132,9 +132,9 @@ fn draw_onboarding(f: &mut Frame, area: Rect, input: &str, mode: &OnboardingMode
             let centered_input = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([
-                    Constraint::Percentage(35),  // left padding
-                    Constraint::Percentage(30),  // input box width
-                    Constraint::Percentage(35),  // right padding
+                    Constraint::Percentage(35), // left padding
+                    Constraint::Percentage(30), // input box width
+                    Constraint::Percentage(35), // right padding
                 ])
                 .split(input_area[0]);
 
