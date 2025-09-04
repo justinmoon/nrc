@@ -12,6 +12,7 @@ use std::str::FromStr;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
+pub mod notification_handler;
 /// Get default relay URLs - uses local relay for tests when TEST_USE_LOCAL_RELAY is set
 pub fn get_default_relays() -> &'static [&'static str] {
     #[cfg(test)]
@@ -59,8 +60,7 @@ pub enum AppEvent {
     NetworkError { error: String },
 
     // Timer Events
-    FetchMessagesTick,
-    FetchWelcomesTick,
+    ProcessPendingOperationsTick,
 
     // Raw network data to be processed
     RawMessagesReceived { events: Vec<Event> },
@@ -271,29 +271,19 @@ impl Nrc {
             tokio::time::sleep(Duration::from_millis(1500)).await;
 
             // Try to fetch from relay
-            if let Ok(events) = self
+            let events = self
                 .client
                 .fetch_events(filter.clone(), Duration::from_secs(5))
-                .await
-            {
-                if !events.is_empty() {
-                    log::debug!("Found key package on attempt {attempt}");
-                    return Ok(events.into_iter().next().unwrap());
-                }
-            }
+                .await?;
 
-            if attempt % 3 == 0 {
-                log::debug!("Attempt {attempt} - key package not found yet for {pubkey}");
+            if let Some(event) = events.into_iter().next() {
+                log::debug!("Found key package on attempt {attempt}");
+                return Ok(event);
             }
+            log::debug!("Key package not found on attempt {attempt}");
         }
 
-        // Last resort: check local database
-        let events = self.client.database().query(filter).await?;
-
-        events
-            .into_iter()
-            .find(|e| e.pubkey == *pubkey)
-            .ok_or_else(|| anyhow::anyhow!("No key package found for {} after 10 attempts", pubkey))
+        Err(anyhow::anyhow!("No key package found for {pubkey}"))
     }
 
     pub async fn create_group(&mut self, name: String) -> Result<GroupId> {
@@ -459,6 +449,7 @@ impl Nrc {
 
         // Note: merge_pending_commit is already called inside create_message
 
+        // Send message directly - retry logic can be added later if needed
         log::debug!(
             "Sending message event: id={}, kind={}",
             event.id,
@@ -574,6 +565,7 @@ impl Nrc {
 
     pub async fn initialize(&mut self) -> Result<()> {
         self.state = AppState::Initializing;
+
         self.publish_key_package().await?;
 
         let groups = with_storage!(self, get_groups())?;

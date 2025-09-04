@@ -26,7 +26,7 @@ async fn test_giftwrap_welcome_delivery() -> Result<()> {
     tokio::time::sleep(Duration::from_secs(5)).await;
 
     // Alice fetches welcomes using event-driven approach
-    alice.trigger_fetch_welcomes()?;
+    alice.trigger_fetch_welcomes().await?;
     alice.process_pending_events().await?;
 
     // Alice should have joined the group
