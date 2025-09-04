@@ -24,6 +24,14 @@ impl TestClient {
         // Create Nrc instance with memory storage
         let mut nrc = Nrc::new(&temp_dir, true).await?;
 
+        // Log relay configuration for debugging
+        #[cfg(test)]
+        {
+            if std::env::var("TEST_USE_LOCAL_RELAY").is_ok() {
+                log::info!("Using local relay for test client {name}: ws://127.0.0.1:8080");
+            }
+        }
+
         // Create event channel for testing
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         nrc.event_tx = Some(event_tx.clone());

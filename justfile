@@ -14,9 +14,9 @@ fmt:
 clippy:
     cargo clippy --all-targets --all-features -- -D warnings
 
-# Run all tests
+# Run all tests with local relay
 test:
-    cargo test --all-features --verbose
+    bash scripts/test-with-relay.sh --all-features --verbose
 
 # Run CI locally with act  
 act-ci fresh='':
