@@ -6,11 +6,19 @@ edition = "2021"
 [dependencies]
 nostr-mls = { git = "https://github.com/rust-nostr/nostr", branch = "master" }
 nostr-mls-memory-storage = { git = "https://github.com/rust-nostr/nostr", branch = "master" }
+nostr-mls-sqlite-storage = { git = "https://github.com/rust-nostr/nostr", branch = "master" }
 nostr-mls-storage = { git = "https://github.com/rust-nostr/nostr", branch = "master" }
 nostr-sdk = { git = "https://github.com/rust-nostr/nostr", branch = "master", features = ["nip59"] }
 tokio = { version = "1", features = ["full"] }
 anyhow = "1.0"
 hex = "0.4"
 openmls = { version = "0.7.0", default-features = false }
+ratatui = "0.28"
+crossterm = "0.28"
+log = "0.4"
+env_logger = "0.11"
+chrono = "0.4"
+clipboard = "0.5"
+clap = { version = "4.5", features = ["derive"] }
 
 [dev-dependencies]
