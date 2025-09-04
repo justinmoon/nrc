@@ -9,6 +9,37 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::str::FromStr;
 use std::time::Duration;
+use crossterm::event::KeyEvent;
+use tokio::sync::mpsc;
+
+#[derive(Debug, Clone)]
+pub enum AppEvent {
+    // UI Events
+    KeyPress(KeyEvent),
+    
+    // Network Events (from background task)
+    MessageReceived { group_id: GroupId, message: Message },
+    WelcomeReceived { welcome: UnsignedEvent },
+    GroupCreated { group_id: GroupId },
+    KeyPackagePublished,
+    ProfilePublished,
+    NetworkError { error: String },
+    
+    // Timer Events
+    FetchMessagesTick,
+    FetchWelcomesTick,
+}
+
+#[derive(Debug, Clone)]
+pub enum NetworkCommand {
+    SendMessage { group_id: GroupId, content: String },
+    JoinGroup { npub: String },
+    CreateGroup { name: String },
+    PublishKeyPackage,
+    PublishProfile { display_name: String },
+    FetchMessages,
+    FetchWelcomes,
+}
 
 #[derive(Debug, Clone)]
 pub struct Message {
@@ -38,11 +69,12 @@ pub enum OnboardingMode {
     ImportExisting,
 }
 
-enum Storage {
+pub enum Storage {
     Memory(NostrMls<NostrMlsMemoryStorage>),
     Sqlite(NostrMls<NostrMlsSqliteStorage>),
 }
 
+#[macro_export]
 macro_rules! with_storage {
     ($self:expr, $method:ident($($args:expr),*)) => {
         match &$self.storage {
@@ -52,6 +84,7 @@ macro_rules! with_storage {
     };
 }
 
+#[macro_export]
 macro_rules! with_storage_mut {
     ($self:expr, $method:ident($($args:expr),*)) => {
         match &mut $self.storage {
@@ -76,6 +109,8 @@ pub struct Nrc {
     pub flash_message: Option<String>,
     pub show_help: bool,
     profiles: HashMap<PublicKey, Metadata>,
+    pub event_tx: Option<mpsc::UnboundedSender<AppEvent>>,
+    pub command_tx: Option<mpsc::Sender<NetworkCommand>>,
 }
 
 impl Nrc {
@@ -132,6 +167,8 @@ impl Nrc {
             flash_message: None,
             show_help: false,
             profiles: HashMap::new(),
+            event_tx: None,
+            command_tx: None,
         })
     }
 
@@ -596,6 +633,26 @@ impl Nrc {
     
     pub fn get_groups(&self) -> Vec<GroupId> {
         self.groups.keys().cloned().collect()
+    }
+    
+    pub fn add_group(&mut self, group_id: GroupId) {
+        if let AppState::Ready {
+            key_package_published,
+            mut groups,
+        } = self.state.clone()
+        {
+            if !groups.contains(&group_id) {
+                groups.push(group_id);
+            }
+            self.state = AppState::Ready {
+                key_package_published,
+                groups,
+            };
+        }
+    }
+    
+    pub fn add_message(&mut self, group_id: GroupId, message: Message) {
+        self.messages.entry(group_id).or_default().push(message);
     }
     
     pub fn get_active_group(&self) -> Option<&GroupId> {

@@ -1,13 +1,16 @@
 mod tui;
+mod keyboard;
+// mod network_task;  // TODO: Enable once storage can be shared
+mod timer_task;
 
 use anyhow::Result;
 use clap::Parser;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
+    event::{KeyCode, KeyEvent, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use nrc::{AppState, Nrc, OnboardingMode};
+use nrc::{AppState, AppEvent, NetworkCommand, Nrc, OnboardingMode};
 use ratatui::{
     backend::CrosstermBackend,
     Terminal,
@@ -15,7 +18,8 @@ use ratatui::{
 use std::io;
 use std::fs::{self, OpenOptions};
 use std::path::PathBuf;
-use tokio::time::{Duration, Instant};
+use tokio::sync::mpsc;
+use tokio::time::{Duration, timeout};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -99,53 +103,75 @@ async fn run_app<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     nrc: &mut Nrc,
 ) -> Result<()> {
-    let mut last_tick = Instant::now();
-    let mut last_message_fetch = Instant::now();
-    let mut last_welcome_fetch = Instant::now();
-    let tick_rate = Duration::from_millis(250);
-    let message_fetch_interval = Duration::from_secs(2); // Fetch messages every 2 seconds
-    let welcome_fetch_interval = Duration::from_secs(3); // Fetch welcomes every 3 seconds
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let (command_tx, _command_rx) = mpsc::channel(100);
     
+    // Store channels in Nrc
+    nrc.event_tx = Some(event_tx.clone());
+    nrc.command_tx = Some(command_tx.clone());
+    
+    // Spawn event producers
+    keyboard::spawn_keyboard_listener(event_tx.clone());
+    timer_task::spawn_timer_task(event_tx.clone()).await;
+    
+    // Note: We'll need to create network task differently since we can't clone storage
+    // For now, we'll handle network commands directly in the main loop
+    
+    // Main event loop - THE ONLY PLACE WHERE STATE CHANGES
     loop {
+        // Draw UI
         terminal.draw(|f| tui::draw(f, nrc))?;
         
-        let timeout = tick_rate
-            .checked_sub(last_tick.elapsed())
-            .unwrap_or_else(|| Duration::from_secs(0));
-        
-        if crossterm::event::poll(timeout)? {
-            if let Event::Key(key) = event::read()? {
-                if handle_key_event(key, nrc).await? {
-                    return Ok(());
+        // Process events with small timeout for refresh rate
+        match timeout(Duration::from_millis(50), event_rx.recv()).await {
+            Ok(Some(event)) => {
+                match event {
+                    AppEvent::KeyPress(key) => {
+                        if handle_key_press(nrc, key, &command_tx).await? {
+                            return Ok(()); // Quit
+                        }
+                    }
+                    AppEvent::MessageReceived { group_id, message } => {
+                        nrc.add_message(group_id, message);
+                    }
+                    AppEvent::GroupCreated { group_id } => {
+                        nrc.add_group(group_id);
+                    }
+                    AppEvent::NetworkError { error } => {
+                        nrc.last_error = Some(error);
+                    }
+                    AppEvent::FetchMessagesTick => {
+                        // Directly call the fetch method for now
+                        if let Err(e) = nrc.fetch_and_process_messages().await {
+                            log::error!("Failed to fetch messages: {}", e);
+                        }
+                    }
+                    AppEvent::FetchWelcomesTick => {
+                        // Directly call the fetch method for now
+                        if let Err(e) = nrc.fetch_and_process_welcomes().await {
+                            log::error!("Failed to fetch welcomes: {}", e);
+                        }
+                    }
+                    AppEvent::KeyPackagePublished => {
+                        if let AppState::Ready { groups, .. } = &nrc.state {
+                            nrc.state = AppState::Ready {
+                                key_package_published: true,
+                                groups: groups.clone(),
+                            };
+                        }
+                    }
+                    _ => {}
                 }
             }
-        }
-        
-        if last_tick.elapsed() >= tick_rate {
-            last_tick = Instant::now();
-            
-            // Check if we should fetch messages
-            if last_message_fetch.elapsed() >= message_fetch_interval {
-                // Fetch messages in the background
-                if let Err(e) = nrc.fetch_and_process_messages().await {
-                    log::error!("Failed to fetch messages: {}", e);
-                }
-                last_message_fetch = Instant::now();
-            }
-            
-            // Check if we should fetch welcomes (for auto-joining groups)
-            if last_welcome_fetch.elapsed() >= welcome_fetch_interval {
-                // Fetch welcomes to auto-join groups when invited
-                if let Err(e) = nrc.fetch_and_process_welcomes().await {
-                    log::error!("Failed to fetch welcomes: {}", e);
-                }
-                last_welcome_fetch = Instant::now();
-            }
+            Ok(None) => break, // Channel closed
+            Err(_) => {} // Timeout - just redraw
         }
     }
+    
+    Ok(())
 }
 
-async fn handle_key_event(key: KeyEvent, nrc: &mut Nrc) -> Result<bool> {
+async fn handle_key_press(nrc: &mut Nrc, key: KeyEvent, _command_tx: &mpsc::Sender<NetworkCommand>) -> Result<bool> {
     // Only allow Ctrl+C for emergency exit
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
         return Ok(true);
