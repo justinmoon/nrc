@@ -64,19 +64,21 @@ pub fn spawn_fetch_welcomes(client: Client, keys: Keys, event_tx: mpsc::Unbounde
         log::debug!("Background: fetching welcomes");
         let start = std::time::Instant::now();
 
-        let filter = Nrc::giftwrap_filter_for_recipient(&keys.public_key())
-            .since(Timestamp::now() - Duration::from_secs(60 * 60)); // Last hour
+        let filter = Nrc::giftwrap_filter_for_recipient(&keys.public_key()).limit(100); // Remove time restriction to catch all relevant events
 
-        if let Ok(events) = client.fetch_events(filter, Duration::from_secs(2)).await {
-            let events_vec: Vec<Event> = events.into_iter().collect();
-            log::debug!(
-                "Background: fetched {} GiftWrap events in {:?}",
-                events_vec.len(),
-                start.elapsed()
-            );
+        // Subscribe AND fetch - same pattern as message fetching
+        if client.subscribe(filter.clone(), None).await.is_ok() {
+            if let Ok(events) = client.fetch_events(filter, Duration::from_secs(2)).await {
+                let events_vec: Vec<Event> = events.into_iter().collect();
+                log::debug!(
+                    "Background: fetched {} GiftWrap events in {:?}",
+                    events_vec.len(),
+                    start.elapsed()
+                );
 
-            if !events_vec.is_empty() {
-                let _ = event_tx.send(AppEvent::RawWelcomesReceived { events: events_vec });
+                if !events_vec.is_empty() {
+                    let _ = event_tx.send(AppEvent::RawWelcomesReceived { events: events_vec });
+                }
             }
         }
     });

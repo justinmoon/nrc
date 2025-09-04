@@ -272,7 +272,7 @@ impl Nrc {
 
         events
             .into_iter()
-            .next()
+            .find(|e| e.pubkey == *pubkey)
             .ok_or_else(|| anyhow::anyhow!("No key package found for {} after 10 attempts", pubkey))
     }
 
