@@ -28,6 +28,10 @@ pub enum AppEvent {
     // Timer Events
     FetchMessagesTick,
     FetchWelcomesTick,
+    
+    // Raw network data to be processed
+    RawMessagesReceived { events: Vec<Event> },
+    RawWelcomesReceived { events: Vec<Event> },
 }
 
 #[derive(Debug, Clone)]
@@ -96,12 +100,12 @@ macro_rules! with_storage_mut {
 
 pub struct Nrc {
     storage: Storage,
-    keys: Keys,
-    client: Client,
+    pub keys: Keys,
+    pub client: Client,
     pub state: AppState,
     messages: HashMap<GroupId, Vec<Message>>,
     welcome_rumors: HashMap<PublicKey, UnsignedEvent>,
-    groups: HashMap<GroupId, group_types::Group>,
+    pub groups: HashMap<GroupId, group_types::Group>,
     pub input: String,
     pub selected_group_index: Option<usize>,
     pub scroll_offset: u16,
@@ -918,6 +922,123 @@ impl Nrc {
         } else {
             Ok(vec![])
         }
+    }
+    
+    /// Process a single message event that was fetched in the background
+    pub async fn process_message_event(&mut self, event: Event) -> Result<()> {
+        log::debug!("Processing message event: {}", event.id);
+        
+        if let Ok(MessageProcessingResult::ApplicationMessage(msg)) =
+            with_storage_mut!(self, process_message(&event))
+        {
+            if msg.kind == Kind::TextNote {
+                if let Ok(Some(stored_msg)) = with_storage!(self, get_message(&msg.id)) {
+                    // Find which group this belongs to based on the h tag
+                    for (group_id, group) in &self.groups {
+                        let h_tag_value = hex::encode(&group.nostr_group_id);
+                        
+                        // Check if this message belongs to this group
+                        let belongs_to_group = event.tags.iter().any(|tag| {
+                            tag.as_slice().len() >= 2 && 
+                            tag.as_slice()[0] == "h" && 
+                            tag.as_slice()[1] == h_tag_value
+                        });
+                        
+                        if belongs_to_group {
+                            let messages = self.messages.entry(group_id.clone()).or_default();
+                            let already_exists = messages.iter().any(|m| {
+                                m.content == stored_msg.content
+                                    && m.sender == stored_msg.pubkey
+                                    && m.timestamp == stored_msg.created_at
+                            });
+
+                            if !already_exists {
+                                let message = Message {
+                                    content: stored_msg.content.clone(),
+                                    sender: stored_msg.pubkey,
+                                    timestamp: stored_msg.created_at,
+                                };
+                                log::info!("Adding message to group: '{}' from {}", 
+                                    message.content, 
+                                    message.sender.to_bech32().unwrap_or_else(|_| "unknown".to_string())
+                                );
+                                messages.push(message.clone());
+                                
+                                // Fetch profile in background if we don't have it
+                                if !self.profiles.contains_key(&message.sender) {
+                                    let _ = self.fetch_profile(&message.sender).await;
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// Process a single welcome event that was fetched in the background
+    pub async fn process_welcome_event(&mut self, event: Event) -> Result<()> {
+        if event.kind != Kind::GiftWrap {
+            return Ok(());
+        }
+
+        match self.client.unwrap_gift_wrap(&event).await {
+            Ok(unwrapped) => {
+                // Check if this is a welcome message (kind 444)
+                if unwrapped.rumor.kind != Kind::from(444u16) {
+                    return Ok(());
+                }
+
+                // Process the welcome to add it to pending welcomes
+                match with_storage_mut!(self, process_welcome(&event.id, &unwrapped.rumor)) {
+                    Ok(welcome) => {
+                        // Accept the welcome to actually join the group
+                        if let Ok(()) = with_storage_mut!(self, accept_welcome(&welcome)) {
+                            let group_id = GroupId::from_slice(welcome.mls_group_id.as_slice());
+                            log::info!("Auto-joining group via welcome: {}", hex::encode(group_id.as_slice()));
+                            
+                            // Get the group info from storage after accepting
+                            if let Ok(Some(group)) = with_storage!(self, get_group(&group_id)) {
+                                self.groups.insert(group_id.clone(), group.clone());
+                                
+                                // Fetch the profile of the person who invited us
+                                if let Some(admin) = group.admin_pubkeys.first() {
+                                    let _ = self.fetch_profile(admin).await;
+                                }
+                            }
+                            
+                            // Update state to include new group
+                            if let AppState::Ready {
+                                key_package_published,
+                                mut groups,
+                            } = self.state.clone()
+                            {
+                                if !groups.contains(&group_id) {
+                                    groups.push(group_id.clone());
+                                    self.selected_group_index = Some(groups.len() - 1);
+                                    self.state = AppState::Ready {
+                                        key_package_published,
+                                        groups,
+                                    };
+                                    self.flash_message = Some("Joined new group via invitation!".to_string());
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::debug!("Not a welcome or already processed: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                log::debug!("Failed to unwrap gift wrap: {}", e);
+            }
+        }
+        
+        Ok(())
     }
 }
 

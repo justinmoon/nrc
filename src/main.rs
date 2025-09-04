@@ -2,6 +2,7 @@ mod tui;
 mod keyboard;
 // mod network_task;  // TODO: Enable once storage can be shared
 mod timer_task;
+mod network_async;
 
 use anyhow::Result;
 use clap::Parser;
@@ -141,15 +142,45 @@ async fn run_app<B: ratatui::backend::Backend>(
                         nrc.last_error = Some(error);
                     }
                     AppEvent::FetchMessagesTick => {
-                        // Directly call the fetch method for now
-                        if let Err(e) = nrc.fetch_and_process_messages().await {
-                            log::error!("Failed to fetch messages: {}", e);
+                        // Spawn background task to fetch messages
+                        let groups = match &nrc.state {
+                            AppState::Ready { groups, .. } => groups.clone(),
+                            _ => vec![],
+                        };
+                        if !groups.is_empty() {
+                            network_async::spawn_fetch_messages(
+                                groups,
+                                nrc.groups.clone(),
+                                nrc.client.clone(),
+                                event_tx.clone(),
+                            );
                         }
                     }
                     AppEvent::FetchWelcomesTick => {
-                        // Directly call the fetch method for now
-                        if let Err(e) = nrc.fetch_and_process_welcomes().await {
-                            log::error!("Failed to fetch welcomes: {}", e);
+                        // Spawn background task to fetch welcomes
+                        network_async::spawn_fetch_welcomes(
+                            nrc.client.clone(),
+                            nrc.keys.clone(),
+                            event_tx.clone(),
+                        );
+                    }
+                    AppEvent::RawMessagesReceived { events } => {
+                        // Process the fetched messages in the main loop
+                        log::debug!("Processing {} fetched message events", events.len());
+                        for event in events {
+                            // Process each event - this is fast since it's just decryption
+                            if let Err(e) = nrc.process_message_event(event).await {
+                                log::debug!("Failed to process message: {}", e);
+                            }
+                        }
+                    }
+                    AppEvent::RawWelcomesReceived { events } => {
+                        // Process the fetched welcomes in the main loop
+                        log::debug!("Processing {} fetched welcome events", events.len());
+                        for event in events {
+                            if let Err(e) = nrc.process_welcome_event(event).await {
+                                log::debug!("Failed to process welcome: {}", e);
+                            }
                         }
                     }
                     AppEvent::KeyPackagePublished => {
