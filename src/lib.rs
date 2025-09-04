@@ -140,6 +140,7 @@ pub struct Nrc {
     pub last_error: Option<String>,
     pub flash_message: Option<String>,
     pub show_help: bool,
+    pub help_explicitly_requested: bool,
     profiles: HashMap<PublicKey, Metadata>,
     pub event_tx: Option<mpsc::UnboundedSender<AppEvent>>,
     pub command_tx: Option<mpsc::Sender<NetworkCommand>>,
@@ -203,6 +204,7 @@ impl Nrc {
             last_error: None,
             flash_message: None,
             show_help: false,
+            help_explicitly_requested: false,
             profiles: HashMap::new(),
             event_tx: None,
             command_tx: None,
@@ -490,7 +492,7 @@ impl Nrc {
                         .as_mut()
                         .unwrap()
                         .schedule_retry(&op_id, 0)?;
-                    log::warn!("Message send failed, queued for retry: {}", e);
+                    log::warn!("Message send failed, queued for retry: {e}");
                     return Err(e);
                 }
             }
@@ -614,7 +616,7 @@ impl Nrc {
         if self.retry_queue.is_some() {
             log::info!("Checking for pending operations from last session...");
             if let Err(e) = self.process_pending_operations().await {
-                log::error!("Failed to process pending operations: {}", e);
+                log::error!("Failed to process pending operations: {e}");
             }
         }
 
@@ -642,7 +644,7 @@ impl Nrc {
         if self.retry_queue.is_some() {
             log::info!("Checking for pending operations from last session...");
             if let Err(e) = self.process_pending_operations().await {
-                log::error!("Failed to process pending operations: {}", e);
+                log::error!("Failed to process pending operations: {e}");
             }
         }
 
@@ -826,6 +828,7 @@ impl Nrc {
         // Handle help command
         if input == "/help" || input == "/h" {
             self.show_help = true;
+            self.help_explicitly_requested = true;
             return Ok(false);
         }
 
@@ -953,6 +956,7 @@ impl Nrc {
 
     pub fn dismiss_help(&mut self) {
         self.show_help = false;
+        self.help_explicitly_requested = false;
     }
 
     pub fn get_display_name_for_pubkey(&self, pubkey: &PublicKey) -> String {
@@ -1057,16 +1061,13 @@ impl Nrc {
                 match execute_result {
                     Ok(()) => {
                         if let Some(event) = self.retry_queue.as_mut().unwrap().complete(&id)? {
-                            log::info!("Completed operation {}, event: {:?}", id, event);
+                            log::info!("Completed operation {id}, event: {event:?}");
                             // Could emit event here if needed
                             if let Some(ref _tx) = self.event_tx {
                                 // Convert SuccessEvent to AppEvent if needed
-                                match event {
-                                    SuccessEvent::MessageSent { .. } => {
-                                        self.flash_message =
-                                            Some("Queued message sent successfully".to_string());
-                                    }
-                                    _ => {}
+                                if let SuccessEvent::MessageSent { .. } = event {
+                                    self.flash_message =
+                                        Some("Queued message sent successfully".to_string());
                                 }
                             }
                         }
@@ -1095,7 +1096,7 @@ impl Nrc {
             // Clean up operations older than 7 days
             let count = retry_queue.cleanup_old(7 * 24 * 60 * 60)?;
             if count > 0 {
-                log::info!("Cleaned up {} old operations", count);
+                log::info!("Cleaned up {count} old operations");
             }
         }
         Ok(())

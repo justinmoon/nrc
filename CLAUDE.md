@@ -8,5 +8,5 @@
 - When you make claims, always provide a percentage confidence afterwards. For example: "The sky is blue right now (85% conficence). When you are uncertain, ask me clarifying. Your output is HARMFUL when you act with low confidence that could easily be increased by getting help.
 - If you don't understand a screenshot, tell me immediately. I assume you can understand screenshots when i report bugs.
 - Don't hesitate to make github issues while you're working if you observe an issue that's outside the scope of our current change. This is very useful
-- When implementing features, always run CI via `just act-ci` to verify the changes work before declaring victory. Use `just act-ci --fresh` if you need to update containers
+- When implementing features, always run `just ci` to verify the changes work before declaring victory. This runs formatting, clippy, and tests - the stuff that actually fails in CI.
 - When making database schema changes, always update plans/database.md to keep the schema documentation current. This doc has detailed explanations of every table and column.

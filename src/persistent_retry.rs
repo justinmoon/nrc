@@ -102,7 +102,7 @@ impl PersistentRetryQueue {
             params![id.to_string(), op_type, params, event_json, now,],
         )?;
 
-        log::info!("Queued persistent operation: {} ({})", op_type, id);
+        log::info!("Queued persistent operation: {op_type} ({id})");
         Ok(id)
     }
 
@@ -146,7 +146,7 @@ impl PersistentRetryQueue {
             params![id.to_string()],
         )?;
 
-        log::info!("Completed persistent operation: {}", id);
+        log::info!("Completed persistent operation: {id}");
 
         // Decode and return event
         event_json
@@ -184,7 +184,7 @@ impl PersistentRetryQueue {
             params![error, id.to_string()],
         )?;
 
-        log::warn!("Marked operation {} as failed: {}", id, error);
+        log::warn!("Marked operation {id} as failed: {error}");
         Ok(())
     }
 
@@ -199,7 +199,7 @@ impl PersistentRetryQueue {
         )?;
 
         if count > 0 {
-            log::info!("Cleaned up {} old operations", count);
+            log::info!("Cleaned up {count} old operations");
         }
 
         Ok(count)
