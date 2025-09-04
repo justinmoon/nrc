@@ -372,14 +372,14 @@ impl Nrc {
     /// Create a filter for fetching GiftWrap events for a specific recipient
     /// GiftWrap events use ephemeral pubkeys, so we filter by the p tag
     pub fn giftwrap_filter_for_recipient(recipient_pubkey: &PublicKey) -> Filter {
-        Filter::new()
-            .kind(Kind::GiftWrap)
-            .custom_tag(SingleLetterTag::lowercase(Alphabet::P), recipient_pubkey.to_hex())
+        Filter::new().kind(Kind::GiftWrap).custom_tag(
+            SingleLetterTag::lowercase(Alphabet::P),
+            recipient_pubkey.to_hex(),
+        )
     }
 
     pub async fn fetch_and_process_welcomes(&mut self) -> Result<()> {
-        let filter = Nrc::giftwrap_filter_for_recipient(&self.keys.public_key())
-            .limit(10);
+        let filter = Nrc::giftwrap_filter_for_recipient(&self.keys.public_key()).limit(10);
 
         tokio::time::sleep(Duration::from_secs(2)).await;
 
