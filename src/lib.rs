@@ -12,6 +12,9 @@ use std::str::FromStr;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
+pub mod persistent_retry;
+use persistent_retry::{PersistentOp, PersistentRetryQueue, SuccessEvent};
+
 /// Get default relay URLs - uses local relay for tests when TEST_USE_LOCAL_RELAY is set
 pub fn get_default_relays() -> &'static [&'static str] {
     #[cfg(test)]
@@ -29,15 +32,6 @@ pub fn get_default_relays() -> &'static [&'static str] {
         "wss://nostr.wine",
     ]
 }
-
-/// Default relay URLs used throughout the application
-pub const DEFAULT_RELAYS: &[&str] = &[
-    "wss://relay.damus.io",
-    "wss://nos.lol",
-    "wss://relay.nostr.band",
-    "wss://relay.snort.social",
-    "wss://nostr.wine",
-];
 
 /// Helper function to safely convert PublicKey to bech32 with fallback
 fn pubkey_to_bech32_safe(pubkey: &PublicKey) -> String {
@@ -61,6 +55,7 @@ pub enum AppEvent {
     // Timer Events
     FetchMessagesTick,
     FetchWelcomesTick,
+    ProcessPendingOperationsTick,
 
     // Raw network data to be processed
     RawMessagesReceived { events: Vec<Event> },
@@ -148,6 +143,7 @@ pub struct Nrc {
     profiles: HashMap<PublicKey, Metadata>,
     pub event_tx: Option<mpsc::UnboundedSender<AppEvent>>,
     pub command_tx: Option<mpsc::Sender<NetworkCommand>>,
+    pub retry_queue: Option<PersistentRetryQueue>,
 }
 
 impl Nrc {
@@ -167,17 +163,27 @@ impl Nrc {
         // Wait for connections to establish
         tokio::time::sleep(Duration::from_secs(2)).await;
 
-        let storage = if use_memory {
+        let (storage, retry_queue) = if use_memory {
             log::info!("Using in-memory storage");
-            Storage::Memory(Box::new(NostrMls::new(NostrMlsMemoryStorage::default())))
+            (
+                Storage::Memory(Box::new(NostrMls::new(NostrMlsMemoryStorage::default()))),
+                None,
+            )
         } else {
             // Create datadir if it doesn't exist
             std::fs::create_dir_all(datadir)?;
             let db_path = datadir.join("nrc.db");
             log::info!("Using SQLite storage at: {db_path:?}");
-            Storage::Sqlite(Box::new(NostrMls::new(NostrMlsSqliteStorage::new(
-                db_path,
-            )?)))
+
+            // Create retry queue with same database
+            let retry_queue = PersistentRetryQueue::new(&db_path)?;
+
+            (
+                Storage::Sqlite(Box::new(NostrMls::new(NostrMlsSqliteStorage::new(
+                    db_path,
+                )?))),
+                Some(retry_queue),
+            )
         };
 
         Ok(Self {
@@ -200,6 +206,7 @@ impl Nrc {
             profiles: HashMap::new(),
             event_tx: None,
             command_tx: None,
+            retry_queue,
         })
     }
 
@@ -449,20 +456,61 @@ impl Nrc {
     }
 
     pub async fn send_message(&mut self, group_id: GroupId, content: String) -> Result<()> {
-        let group_id = &group_id;
-        let content = &content;
-        let text_note_rumor = EventBuilder::text_note(content).build(self.keys.public_key());
+        // If we have a retry queue, use it for persistent retries
+        if self.retry_queue.is_some() {
+            let op = PersistentOp::SendMessage {
+                group_id: group_id.as_slice().to_vec(),
+                content: content.clone(),
+            };
 
-        let event = with_storage_mut!(self, create_message(group_id, text_note_rumor))?;
+            let success_event = SuccessEvent::MessageSent {
+                group_id: group_id.as_slice().to_vec(),
+                timestamp: Timestamp::now().as_u64(),
+            };
 
-        // Note: merge_pending_commit is already called inside create_message
+            // Enqueue the operation
+            let op_id = self
+                .retry_queue
+                .as_mut()
+                .unwrap()
+                .enqueue(op.clone(), Some(success_event))?;
 
-        log::debug!(
-            "Sending message event: id={}, kind={}",
-            event.id,
-            event.kind
-        );
-        self.client.send_event(&event).await?;
+            // Try to execute immediately (but it's queued if we fail)
+            let execute_result = self.execute_operation(op).await;
+
+            // Handle the result after execution
+            match execute_result {
+                Ok(()) => {
+                    self.retry_queue.as_mut().unwrap().complete(&op_id)?;
+                    log::info!("Message sent successfully via persistent queue");
+                }
+                Err(e) => {
+                    // Operation is queued, will retry later
+                    self.retry_queue
+                        .as_mut()
+                        .unwrap()
+                        .schedule_retry(&op_id, 0)?;
+                    log::warn!("Message send failed, queued for retry: {}", e);
+                    return Err(e);
+                }
+            }
+        } else {
+            // No retry queue, just send directly
+            let group_id = &group_id;
+            let content = &content;
+            let text_note_rumor = EventBuilder::text_note(content).build(self.keys.public_key());
+
+            let event = with_storage_mut!(self, create_message(group_id, text_note_rumor))?;
+
+            // Note: merge_pending_commit is already called inside create_message
+
+            log::debug!(
+                "Sending message event: id={}, kind={}",
+                event.id,
+                event.kind
+            );
+            self.client.send_event(&event).await?;
+        }
 
         // Don't store locally - we'll fetch it from the relay like other messages
         // This avoids duplicates
@@ -561,6 +609,15 @@ impl Nrc {
 
     pub async fn initialize(&mut self) -> Result<()> {
         self.state = AppState::Initializing;
+
+        // Process any pending operations from last session
+        if self.retry_queue.is_some() {
+            log::info!("Checking for pending operations from last session...");
+            if let Err(e) = self.process_pending_operations().await {
+                log::error!("Failed to process pending operations: {}", e);
+            }
+        }
+
         self.publish_key_package().await?;
 
         let groups = with_storage!(self, get_groups())?;
@@ -580,6 +637,14 @@ impl Nrc {
 
     pub async fn initialize_with_display_name(&mut self, display_name: String) -> Result<()> {
         self.state = AppState::Initializing;
+
+        // Process any pending operations from last session
+        if self.retry_queue.is_some() {
+            log::info!("Checking for pending operations from last session...");
+            if let Err(e) = self.process_pending_operations().await {
+                log::error!("Failed to process pending operations: {}", e);
+            }
+        }
 
         // Publish profile with display name
         self.publish_profile(display_name).await?;
@@ -916,6 +981,124 @@ impl Nrc {
                 }
             })
             .unwrap_or_else(|_| "Unknown".to_string())
+    }
+
+    async fn execute_operation(&mut self, op: PersistentOp) -> Result<()> {
+        match op {
+            PersistentOp::FetchKeyPackage { pubkey } => {
+                // Fetch key package from relays
+                let filter = Filter::new().kind(Kind::from(443u16)).author(pubkey);
+                let events = self
+                    .client
+                    .fetch_events(filter, Duration::from_secs(5))
+                    .await?;
+                if events.is_empty() {
+                    return Err(anyhow::anyhow!("Key package not found"));
+                }
+                Ok(())
+            }
+            PersistentOp::SendMessage { group_id, content } => {
+                // Send message to group
+                let group_id = GroupId::from_slice(&group_id);
+                let text_note_rumor =
+                    EventBuilder::text_note(&content).build(self.keys.public_key());
+                let event = with_storage_mut!(self, create_message(&group_id, text_note_rumor))?;
+                self.client.send_event(&event).await?;
+                Ok(())
+            }
+            PersistentOp::JoinGroup {
+                pubkey: _,
+                group_name: _,
+            } => {
+                // TODO: Implement group join flow
+                // 1. Fetch key package
+                // 2. Create group
+                // 3. Send welcome
+                log::warn!("JoinGroup operation not yet fully implemented");
+                Err(anyhow::anyhow!("JoinGroup not yet implemented"))
+            }
+            PersistentOp::SendWelcome {
+                recipient: _recipient,
+                welcome_event_json,
+            } => {
+                // Send pre-serialized welcome event
+                let event: Event = serde_json::from_str(&welcome_event_json)?;
+                self.client.send_event(&event).await?;
+                Ok(())
+            }
+        }
+    }
+
+    pub async fn process_pending_operations(&mut self) -> Result<()> {
+        if self.retry_queue.is_some() {
+            let pending = self
+                .retry_queue
+                .as_ref()
+                .unwrap()
+                .get_pending_operations()?;
+
+            for (id, op, retry_count) in pending {
+                if retry_count > 10 {
+                    self.retry_queue
+                        .as_mut()
+                        .unwrap()
+                        .mark_failed(&id, "Too many retries")?;
+                    continue;
+                }
+
+                log::info!(
+                    "Processing pending operation: {:?} (attempt #{})",
+                    id,
+                    retry_count + 1
+                );
+
+                let execute_result = self.execute_operation(op).await;
+
+                match execute_result {
+                    Ok(()) => {
+                        if let Some(event) = self.retry_queue.as_mut().unwrap().complete(&id)? {
+                            log::info!("Completed operation {}, event: {:?}", id, event);
+                            // Could emit event here if needed
+                            if let Some(ref _tx) = self.event_tx {
+                                // Convert SuccessEvent to AppEvent if needed
+                                match event {
+                                    SuccessEvent::MessageSent { .. } => {
+                                        self.flash_message =
+                                            Some("Queued message sent successfully".to_string());
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "Operation {} failed (attempt {}): {}",
+                            id,
+                            retry_count + 1,
+                            e
+                        );
+                        self.retry_queue
+                            .as_mut()
+                            .unwrap()
+                            .schedule_retry(&id, retry_count)?;
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub async fn cleanup_old_operations(&mut self) -> Result<()> {
+        if let Some(ref mut retry_queue) = self.retry_queue {
+            // Clean up operations older than 7 days
+            let count = retry_queue.cleanup_old(7 * 24 * 60 * 60)?;
+            if count > 0 {
+                log::info!("Cleaned up {} old operations", count);
+            }
+        }
+        Ok(())
     }
 
     pub fn get_chat_display_name(&self, group_id: &GroupId) -> String {
