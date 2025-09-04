@@ -263,24 +263,27 @@ impl Nrc {
             .author(*pubkey)
             .limit(1);
 
-        // Subscribe with auto-close on EOSE and timeout
-        let opts = SubscribeAutoCloseOptions::default()
-            .exit_policy(ReqExitPolicy::ExitOnEOSE)
-            .timeout(Some(Duration::from_secs(15)));
+        // Subscribe to ensure we can fetch events
+        self.client.subscribe(filter.clone(), None).await?;
 
-        self.client.subscribe(filter.clone(), Some(opts)).await?;
+        // Give time for event to propagate to relay and retry multiple times
+        for attempt in 1..=10 {
+            tokio::time::sleep(Duration::from_millis(1500)).await;
 
-        // Wait for subscription to deliver events or timeout
-        tokio::time::sleep(Duration::from_secs(16)).await;
+            // Try to fetch from relay
+            let events = self
+                .client
+                .fetch_events(filter.clone(), Duration::from_secs(5))
+                .await?;
 
-        // Check if event was received via subscription
-        let events = self.client.database().query(filter).await?;
-        events.into_iter().next().ok_or_else(|| {
-            anyhow::anyhow!(
-                "No key package found for {} via subscription timeout",
-                pubkey
-            )
-        })
+            if let Some(event) = events.into_iter().next() {
+                log::debug!("Found key package on attempt {attempt}");
+                return Ok(event);
+            }
+            log::debug!("Key package not found on attempt {attempt}");
+        }
+
+        Err(anyhow::anyhow!("No key package found for {pubkey}"))
     }
 
     pub async fn create_group(&mut self, name: String) -> Result<GroupId> {
@@ -922,7 +925,6 @@ impl Nrc {
             })
             .unwrap_or_else(|_| "Unknown".to_string())
     }
-
 
     pub fn get_chat_display_name(&self, group_id: &GroupId) -> String {
         // Get the other member's display name from their profile

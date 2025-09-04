@@ -17,6 +17,9 @@ async fn test_welcome_message_regression_and_chat() -> Result<()> {
     let alice = TestClient::new("alice").await?;
     let bob = TestClient::new("bob").await?;
 
+    // Give Alice's key package time to propagate to relays
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
     let alice_npub = alice.npub().await?;
     let alice_pubkey = PublicKey::from_bech32(&alice_npub)?;
 
@@ -155,6 +158,9 @@ async fn test_welcome_sent_over_network() -> Result<()> {
 
     let alice = TestClient::new("alice").await?;
     let bob = TestClient::new("bob").await?;
+
+    // Give Alice's key package time to propagate to relays
+    tokio::time::sleep(Duration::from_secs(2)).await;
 
     let alice_npub = alice.npub().await?;
 
