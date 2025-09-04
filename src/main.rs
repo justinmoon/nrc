@@ -91,7 +91,11 @@ async fn main() -> Result<()> {
     let res = run_app(&mut terminal, &mut nrc).await;
 
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableBracketedPaste)?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableBracketedPaste
+    )?;
     terminal.show_cursor()?;
 
     if let Err(err) = res {
