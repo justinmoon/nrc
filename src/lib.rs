@@ -797,8 +797,16 @@ impl Nrc {
                     match self.create_group_with_member(key_package).await {
                         Ok(group_id) => {
                             // Send them the welcome
-                            if let Ok(welcome_rumor) = self.get_welcome_rumor_for(&pubkey) {
-                                let _ = self.send_gift_wrapped_welcome(&pubkey, welcome_rumor).await;
+                            match self.get_welcome_rumor_for(&pubkey) {
+                                Ok(welcome_rumor) => {
+                                    log::info!("Sending welcome to {}", pubkey.to_bech32().unwrap_or_else(|_| "unknown".to_string()));
+                                    if let Err(e) = self.send_gift_wrapped_welcome(&pubkey, welcome_rumor).await {
+                                        log::error!("Failed to send welcome: {}", e);
+                                    }
+                                }
+                                Err(e) => {
+                                    log::error!("Failed to get welcome rumor: {}", e);
+                                }
                             }
                             
                             // Update our state to show the new group
