@@ -22,6 +22,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Install X11 dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb-shape0-dev libxcb-xfixes0-dev libxcb1-dev libxcb-render0-dev
+
       - name: Setup Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
