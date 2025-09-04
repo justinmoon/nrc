@@ -1,4 +1,4 @@
-use crate::AppEvent;
+use crate::{AppEvent, Nrc};
 use nostr_sdk::prelude::*;
 use openmls::group::GroupId;
 use std::collections::HashMap;
@@ -64,11 +64,7 @@ pub fn spawn_fetch_welcomes(client: Client, keys: Keys, event_tx: mpsc::Unbounde
         log::debug!("Background: fetching welcomes");
         let start = std::time::Instant::now();
 
-        // GiftWrap events use an ephemeral pubkey, not the recipient's real pubkey
-        // We need to fetch by the p tag that references the recipient
-        let filter = Filter::new()
-            .kind(Kind::GiftWrap)
-            .custom_tag(SingleLetterTag::lowercase(Alphabet::P), keys.public_key().to_hex())
+        let filter = Nrc::giftwrap_filter_for_recipient(&keys.public_key())
             .since(Timestamp::now() - Duration::from_secs(60 * 60)); // Last hour
 
         if let Ok(events) = client.fetch_events(filter, Duration::from_secs(2)).await {

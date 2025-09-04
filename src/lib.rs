@@ -12,6 +12,20 @@ use std::str::FromStr;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
+/// Default relay URLs used throughout the application
+pub const DEFAULT_RELAYS: &[&str] = &[
+    "wss://relay.damus.io",
+    "wss://nos.lol",
+    "wss://relay.nostr.band",
+    "wss://relay.snort.social",
+    "wss://nostr.wine",
+];
+
+/// Helper function to safely convert PublicKey to bech32 with fallback
+fn pubkey_to_bech32_safe(pubkey: &PublicKey) -> String {
+    pubkey.to_bech32().unwrap_or_else(|_| "unknown".to_string())
+}
+
 #[derive(Debug, Clone)]
 pub enum AppEvent {
     // UI Events
@@ -123,15 +137,7 @@ impl Nrc {
         let client = Client::builder().signer(keys.clone()).build();
 
         // Add multiple relays for redundancy
-        let relays = [
-            "wss://relay.damus.io",
-            "wss://nos.lol",
-            "wss://relay.nostr.band",
-            "wss://relay.snort.social",
-            "wss://nostr.wine",
-        ];
-
-        for relay in relays {
+        for &relay in DEFAULT_RELAYS {
             if let Err(e) = client.add_relay(relay).await {
                 log::warn!("Failed to add relay {relay}: {e}");
             }
@@ -189,13 +195,11 @@ impl Nrc {
             .author(self.keys.public_key());
         self.client.subscribe(filter, None).await?;
 
-        let relays = vec![
-            RelayUrl::parse("wss://relay.damus.io")?,
-            RelayUrl::parse("wss://nos.lol")?,
-            RelayUrl::parse("wss://relay.nostr.band")?,
-            RelayUrl::parse("wss://relay.snort.social")?,
-            RelayUrl::parse("wss://nostr.wine")?,
-        ];
+        let relays: Result<Vec<RelayUrl>, _> = DEFAULT_RELAYS
+            .iter()
+            .map(|&url| RelayUrl::parse(url))
+            .collect();
+        let relays = relays?;
         let (key_package_content, tags) = with_storage_mut!(
             self,
             create_key_package_for_event(&self.keys.public_key(), relays)
@@ -278,7 +282,7 @@ impl Nrc {
             None,
             None,
             None,
-            vec![RelayUrl::parse("wss://relay.damus.io")?],
+            vec![RelayUrl::parse(DEFAULT_RELAYS[0])?],
             vec![self.keys.public_key()],
         );
 
@@ -365,12 +369,16 @@ impl Nrc {
         Ok(())
     }
 
-    pub async fn fetch_and_process_welcomes(&mut self) -> Result<()> {
-        // GiftWrap events use an ephemeral pubkey, not the recipient's real pubkey
-        // We need to fetch by the p tag that references the recipient
-        let filter = Filter::new()
+    /// Create a filter for fetching GiftWrap events for a specific recipient
+    /// GiftWrap events use ephemeral pubkeys, so we filter by the p tag
+    pub fn giftwrap_filter_for_recipient(recipient_pubkey: &PublicKey) -> Filter {
+        Filter::new()
             .kind(Kind::GiftWrap)
-            .custom_tag(SingleLetterTag::lowercase(Alphabet::P), self.keys.public_key().to_hex())
+            .custom_tag(SingleLetterTag::lowercase(Alphabet::P), recipient_pubkey.to_hex())
+    }
+
+    pub async fn fetch_and_process_welcomes(&mut self) -> Result<()> {
+        let filter = Nrc::giftwrap_filter_for_recipient(&self.keys.public_key())
             .limit(10);
 
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -508,10 +516,7 @@ impl Nrc {
                                 log::info!(
                                     "Adding message to group: '{}' from {}",
                                     message.content,
-                                    message
-                                        .sender
-                                        .to_bech32()
-                                        .unwrap_or_else(|_| "unknown".to_string())
+                                    pubkey_to_bech32_safe(&message.sender)
                                 );
                                 messages.push(message.clone());
 
@@ -601,15 +606,7 @@ impl Nrc {
         self.keys = keys;
         self.client = Client::builder().signer(self.keys.clone()).build();
 
-        let relays = [
-            "wss://relay.damus.io",
-            "wss://nos.lol",
-            "wss://relay.nostr.band",
-            "wss://relay.snort.social",
-            "wss://nostr.wine",
-        ];
-
-        for relay in relays {
+        for &relay in DEFAULT_RELAYS {
             if let Err(e) = self.client.add_relay(relay).await {
                 log::warn!("Failed to add relay {relay}: {e}");
             }
@@ -814,9 +811,7 @@ impl Nrc {
                                 Ok(welcome_rumor) => {
                                     log::info!(
                                         "Sending welcome to {}",
-                                        pubkey
-                                            .to_bech32()
-                                            .unwrap_or_else(|_| "unknown".to_string())
+                                        pubkey_to_bech32_safe(&pubkey)
                                     );
                                     if let Err(e) =
                                         self.send_gift_wrapped_welcome(&pubkey, welcome_rumor).await
@@ -998,10 +993,7 @@ impl Nrc {
                                 log::info!(
                                     "Adding message to group: '{}' from {}",
                                     message.content,
-                                    message
-                                        .sender
-                                        .to_bech32()
-                                        .unwrap_or_else(|_| "unknown".to_string())
+                                    pubkey_to_bech32_safe(&message.sender)
                                 );
                                 messages.push(message.clone());
 
