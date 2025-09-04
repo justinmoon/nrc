@@ -172,6 +172,24 @@ async fn run_app<B: ratatui::backend::Backend>(
                             event_tx.clone(),
                         );
                     }
+                    AppEvent::ProcessPendingOperationsTick => {
+                        // Process any pending operations in the retry queue
+                        if let Err(e) = nrc.process_pending_operations().await {
+                            log::error!("Failed to process pending operations: {}", e);
+                        }
+
+                        // Periodically clean up old operations
+                        static mut CLEANUP_COUNTER: usize = 0;
+                        unsafe {
+                            CLEANUP_COUNTER += 1;
+                            if CLEANUP_COUNTER % 10 == 0 {
+                                // Every 10 ticks (5 minutes), clean up old operations
+                                if let Err(e) = nrc.cleanup_old_operations().await {
+                                    log::error!("Failed to cleanup old operations: {}", e);
+                                }
+                            }
+                        }
+                    }
                     AppEvent::RawMessagesReceived { events } => {
                         // Process the fetched messages in the main loop
                         log::debug!("Processing {} fetched message events", events.len());
