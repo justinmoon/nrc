@@ -25,7 +25,7 @@ pub fn spawn_fetch_messages(
                 None => continue,
             };
 
-            let h_tag_value = hex::encode(group.nostr_group_id.clone());
+            let h_tag_value = hex::encode(group.nostr_group_id);
 
             let filter = Filter::new()
                 .kind(Kind::from(445u16))

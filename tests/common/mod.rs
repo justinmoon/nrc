@@ -60,6 +60,7 @@ impl TestClient {
     }
 
     /// Process events until a condition is met
+    #[allow(dead_code)]
     pub async fn process_events_until<F>(&self, condition: F, timeout: Duration) -> Result<()>
     where
         F: Fn(&AppEvent) -> bool,
@@ -93,6 +94,7 @@ impl TestClient {
     }
 
     /// Process a single event like the main loop does
+    #[allow(dead_code)]
     async fn process_event(&self, event: AppEvent) -> Result<()> {
         let mut nrc = self.nrc.lock().await;
 

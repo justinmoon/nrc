@@ -238,14 +238,11 @@ async fn handle_key_press(
                 }
                 OnboardingMode::GenerateNew => {
                     // This mode is no longer used since we generate immediately
-                    match key.code {
-                        KeyCode::Esc => {
-                            nrc.state = AppState::Onboarding {
-                                input,
-                                mode: OnboardingMode::Choose,
-                            };
-                        }
-                        _ => {}
+                    if key.code == KeyCode::Esc {
+                        nrc.state = AppState::Onboarding {
+                            input,
+                            mode: OnboardingMode::Choose,
+                        };
                     }
                 }
                 OnboardingMode::EnterDisplayName => {
