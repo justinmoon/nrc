@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-use crate::{AppEvent, NetworkCommand, Message, Storage, with_storage, with_storage_mut, DEFAULT_RELAYS};
+use crate::{AppEvent, NetworkCommand, Message, Storage, with_storage, with_storage_mut, get_default_relays};
 
 pub struct NetworkState {
     pub storage: Storage,
@@ -160,7 +160,7 @@ async fn publish_key_package(state: &mut NetworkState) -> Result<()> {
         .author(state.keys.public_key());
     state.client.subscribe(filter, None).await?;
 
-    let relays: Result<Vec<RelayUrl>, _> = DEFAULT_RELAYS
+    let relays: Result<Vec<RelayUrl>, _> = get_default_relays()
         .iter()
         .map(|&url| RelayUrl::parse(url))
         .collect();
@@ -208,7 +208,7 @@ async fn create_group(state: &mut NetworkState, name: String) -> Result<GroupId>
         None,
         None,
         None,
-        vec![RelayUrl::parse(DEFAULT_RELAYS[0])?],
+        vec![RelayUrl::parse(get_default_relays()[0])?],
         vec![state.keys.public_key()],
     );
     
