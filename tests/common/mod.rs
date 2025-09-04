@@ -14,6 +14,7 @@ pub struct TestClient {
     event_rx: Arc<Mutex<mpsc::UnboundedReceiver<AppEvent>>>,
 }
 
+#[allow(dead_code)] // Methods are used across different test files
 impl TestClient {
     pub async fn new(name: &str) -> Result<Self> {
         // Create a unique temp directory for this client
@@ -64,12 +65,6 @@ impl TestClient {
         Ok(())
     }
 
-    /// Navigate to next group using arrow key
-    pub fn send_arrow_down(&self) -> Result<()> {
-        self.event_tx
-            .send(AppEvent::KeyPress(KeyEvent::from(KeyCode::Down)))?;
-        Ok(())
-    }
 
     /// Navigate to previous group using arrow key
     pub fn send_arrow_up(&self) -> Result<()> {
@@ -94,19 +89,6 @@ impl TestClient {
         Ok(())
     }
 
-    /// Process raw messages received from network
-    pub fn send_raw_messages(&self, events: Vec<nostr_sdk::Event>) -> Result<()> {
-        self.event_tx
-            .send(AppEvent::RawMessagesReceived { events })?;
-        Ok(())
-    }
-
-    /// Process raw welcomes received from network
-    pub fn send_raw_welcomes(&self, events: Vec<nostr_sdk::Event>) -> Result<()> {
-        self.event_tx
-            .send(AppEvent::RawWelcomesReceived { events })?;
-        Ok(())
-    }
 
     /// Process events from the event queue (simulates event loop)
     pub async fn process_pending_events(&self) -> Result<()> {
