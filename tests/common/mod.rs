@@ -66,13 +66,15 @@ impl TestClient {
 
     /// Navigate to next group using arrow key
     pub fn send_arrow_down(&self) -> Result<()> {
-        self.event_tx.send(AppEvent::KeyPress(KeyEvent::from(KeyCode::Down)))?;
+        self.event_tx
+            .send(AppEvent::KeyPress(KeyEvent::from(KeyCode::Down)))?;
         Ok(())
     }
 
     /// Navigate to previous group using arrow key
     pub fn send_arrow_up(&self) -> Result<()> {
-        self.event_tx.send(AppEvent::KeyPress(KeyEvent::from(KeyCode::Up)))?;
+        self.event_tx
+            .send(AppEvent::KeyPress(KeyEvent::from(KeyCode::Up)))?;
         Ok(())
     }
 
@@ -81,7 +83,7 @@ impl TestClient {
         let nrc = self.nrc.lock().await;
         let group_count = nrc.get_groups().len();
         drop(nrc);
-        
+
         // Navigate to first group (index 0) if we have groups
         if group_count > 0 {
             // Reset to first group by sending up arrows to wrap around
@@ -94,13 +96,15 @@ impl TestClient {
 
     /// Process raw messages received from network
     pub fn send_raw_messages(&self, events: Vec<nostr_sdk::Event>) -> Result<()> {
-        self.event_tx.send(AppEvent::RawMessagesReceived { events })?;
+        self.event_tx
+            .send(AppEvent::RawMessagesReceived { events })?;
         Ok(())
     }
 
     /// Process raw welcomes received from network
     pub fn send_raw_welcomes(&self, events: Vec<nostr_sdk::Event>) -> Result<()> {
-        self.event_tx.send(AppEvent::RawWelcomesReceived { events })?;
+        self.event_tx
+            .send(AppEvent::RawWelcomesReceived { events })?;
         Ok(())
     }
 
@@ -108,7 +112,7 @@ impl TestClient {
     pub async fn process_pending_events(&self) -> Result<()> {
         let mut event_rx = self.event_rx.lock().await;
         let mut nrc = self.nrc.lock().await;
-        
+
         // Process all pending events
         while let Ok(event) = event_rx.try_recv() {
             match event {
@@ -155,7 +159,7 @@ impl TestClient {
                 _ => {}
             }
         }
-        
+
         Ok(())
     }
 
