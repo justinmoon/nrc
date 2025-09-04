@@ -12,6 +12,7 @@ use std::str::FromStr;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
+pub mod notification_handler;
 /// Get default relay URLs - uses local relay for tests when TEST_USE_LOCAL_RELAY is set
 pub fn get_default_relays() -> &'static [&'static str] {
     #[cfg(test)]
@@ -59,8 +60,7 @@ pub enum AppEvent {
     NetworkError { error: String },
 
     // Timer Events
-    FetchMessagesTick,
-    FetchWelcomesTick,
+    ProcessPendingOperationsTick,
 
     // Raw network data to be processed
     RawMessagesReceived { events: Vec<Event> },
@@ -263,37 +263,24 @@ impl Nrc {
             .author(*pubkey)
             .limit(1);
 
-        // Subscribe to ensure we can fetch events
-        self.client.subscribe(filter.clone(), None).await?;
+        // Subscribe with auto-close on EOSE and timeout
+        let opts = SubscribeAutoCloseOptions::default()
+            .exit_policy(ReqExitPolicy::ExitOnEOSE)
+            .timeout(Some(Duration::from_secs(15)));
 
-        // Give time for event to propagate to relay and retry multiple times
-        for attempt in 1..=10 {
-            tokio::time::sleep(Duration::from_millis(1500)).await;
+        self.client.subscribe(filter.clone(), Some(opts)).await?;
 
-            // Try to fetch from relay
-            if let Ok(events) = self
-                .client
-                .fetch_events(filter.clone(), Duration::from_secs(5))
-                .await
-            {
-                if !events.is_empty() {
-                    log::debug!("Found key package on attempt {attempt}");
-                    return Ok(events.into_iter().next().unwrap());
-                }
-            }
+        // Wait for subscription to deliver events or timeout
+        tokio::time::sleep(Duration::from_secs(16)).await;
 
-            if attempt % 3 == 0 {
-                log::debug!("Attempt {attempt} - key package not found yet for {pubkey}");
-            }
-        }
-
-        // Last resort: check local database
+        // Check if event was received via subscription
         let events = self.client.database().query(filter).await?;
-
-        events
-            .into_iter()
-            .find(|e| e.pubkey == *pubkey)
-            .ok_or_else(|| anyhow::anyhow!("No key package found for {} after 10 attempts", pubkey))
+        events.into_iter().next().ok_or_else(|| {
+            anyhow::anyhow!(
+                "No key package found for {} via subscription timeout",
+                pubkey
+            )
+        })
     }
 
     pub async fn create_group(&mut self, name: String) -> Result<GroupId> {
@@ -459,6 +446,7 @@ impl Nrc {
 
         // Note: merge_pending_commit is already called inside create_message
 
+        // Send message directly - retry logic can be added later if needed
         log::debug!(
             "Sending message event: id={}, kind={}",
             event.id,
@@ -574,6 +562,7 @@ impl Nrc {
 
     pub async fn initialize(&mut self) -> Result<()> {
         self.state = AppState::Initializing;
+
         self.publish_key_package().await?;
 
         let groups = with_storage!(self, get_groups())?;
@@ -933,6 +922,7 @@ impl Nrc {
             })
             .unwrap_or_else(|_| "Unknown".to_string())
     }
+
 
     pub fn get_chat_display_name(&self, group_id: &GroupId) -> String {
         // Get the other member's display name from their profile

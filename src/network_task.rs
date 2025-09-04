@@ -25,32 +25,22 @@ impl NetworkState {
             .author(*pubkey)
             .limit(1);
 
-        self.client.subscribe(filter.clone(), None).await?;
+        // Subscribe with auto-close on EOSE and timeout
+        let opts = SubscribeAutoCloseOptions::default()
+            .exit_policy(ReqExitPolicy::ExitOnEOSE)
+            .timeout(Some(Duration::from_secs(15)));
+        
+        self.client.subscribe(filter.clone(), Some(opts)).await?;
 
-        for attempt in 1..=10 {
-            tokio::time::sleep(Duration::from_millis(1500)).await;
-
-            if let Ok(events) = self
-                .client
-                .fetch_events(filter.clone(), Duration::from_secs(5))
-                .await
-            {
-                if !events.is_empty() {
-                    log::debug!("Found key package on attempt {attempt}");
-                    return Ok(events.into_iter().next().unwrap());
-                }
-            }
-
-            if attempt % 3 == 0 {
-                log::debug!("Attempt {attempt} - key package not found yet for {pubkey}");
-            }
-        }
-
+        // Wait for subscription to deliver events or timeout
+        tokio::time::sleep(Duration::from_secs(16)).await;
+        
+        // Check if event was received via subscription
         let events = self.client.database().query(filter).await?;
         events
             .into_iter()
             .next()
-            .ok_or_else(|| anyhow::anyhow!("No key package found for {} after 10 attempts", pubkey))
+            .ok_or_else(|| anyhow::anyhow!("No key package found for {} via subscription timeout", pubkey))
     }
 
     pub async fn send_gift_wrapped_welcome(

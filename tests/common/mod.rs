@@ -61,15 +61,17 @@ impl TestClient {
         Ok(())
     }
 
-    /// Send a fetch messages tick event (simulates timer)
-    pub fn trigger_fetch_messages(&self) -> Result<()> {
-        self.event_tx.send(AppEvent::FetchMessagesTick)?;
+    /// Directly trigger fetch messages (no longer uses timer events)
+    pub async fn trigger_fetch_messages(&self) -> Result<()> {
+        let mut nrc = self.nrc.lock().await;
+        nrc.fetch_and_process_messages().await?;
         Ok(())
     }
 
-    /// Send a fetch welcomes tick event (simulates timer)
-    pub fn trigger_fetch_welcomes(&self) -> Result<()> {
-        self.event_tx.send(AppEvent::FetchWelcomesTick)?;
+    /// Directly trigger fetch welcomes (no longer uses timer events)
+    pub async fn trigger_fetch_welcomes(&self) -> Result<()> {
+        let mut nrc = self.nrc.lock().await;
+        nrc.fetch_and_process_welcomes().await?;
         Ok(())
     }
 
@@ -116,14 +118,7 @@ impl TestClient {
                         _ => {}
                     }
                 }
-                AppEvent::FetchMessagesTick => {
-                    // In tests, directly call the fetch since we don't have background tasks
-                    nrc.fetch_and_process_messages().await?;
-                }
-                AppEvent::FetchWelcomesTick => {
-                    // In tests, directly call the fetch since we don't have background tasks
-                    nrc.fetch_and_process_welcomes().await?;
-                }
+                // Removed timer-based events - now handled via direct calls or real-time notifications
                 AppEvent::RawMessagesReceived { events } => {
                     for event in events {
                         if let Err(e) = nrc.process_message_event(event).await {

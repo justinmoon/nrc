@@ -39,7 +39,7 @@ async fn test_welcome_message_regression_and_chat() -> Result<()> {
     tokio::time::sleep(Duration::from_secs(4)).await;
 
     // Trigger fetch welcomes event and process it
-    alice.trigger_fetch_welcomes()?;
+    alice.trigger_fetch_welcomes().await?;
     alice.process_pending_events().await?;
 
     // Alice should now have a group too
@@ -59,7 +59,7 @@ async fn test_welcome_message_regression_and_chat() -> Result<()> {
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     // Trigger fetch messages event for Alice and process it
-    alice.trigger_fetch_messages()?;
+    alice.trigger_fetch_messages().await?;
     alice.process_pending_events().await?;
 
     // Alice should have received Bob's message
@@ -85,7 +85,7 @@ async fn test_welcome_message_regression_and_chat() -> Result<()> {
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     // Trigger fetch messages event for Bob and process it
-    bob.trigger_fetch_messages()?;
+    bob.trigger_fetch_messages().await?;
     bob.process_pending_events().await?;
 
     // Bob should have both messages (his own and Alice's reply)
@@ -118,20 +118,20 @@ async fn test_event_loop_doesnt_block() -> Result<()> {
 
     let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
-    // Send a fetch tick event
-    event_tx.send(AppEvent::FetchMessagesTick)?;
+    // Send a timer-based event (ProcessPendingOperationsTick still exists)
+    event_tx.send(AppEvent::ProcessPendingOperationsTick)?;
 
     // Also send a keyboard event immediately after
     event_tx.send(AppEvent::KeyPress(KeyEvent::from(KeyCode::Char('a'))))?;
 
-    // The keyboard event should be processable even if fetch is running
+    // The keyboard event should be processable even if processing is running
     let start = Instant::now();
 
-    // Get first event (fetch tick)
+    // Get first event (processing tick)
     let event1 = tokio::time::timeout(Duration::from_millis(100), event_rx.recv())
         .await?
         .ok_or_else(|| anyhow::anyhow!("No event received"))?;
-    assert!(matches!(event1, AppEvent::FetchMessagesTick));
+    assert!(matches!(event1, AppEvent::ProcessPendingOperationsTick));
 
     // Get second event (keyboard) - should be available immediately
     let event2 = tokio::time::timeout(Duration::from_millis(100), event_rx.recv())

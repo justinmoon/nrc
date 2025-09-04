@@ -1,8 +1,6 @@
 mod keyboard;
 mod tui;
 // mod network_task;  // TODO: Enable once storage can be shared
-mod network_async;
-mod timer_task;
 
 use anyhow::Result;
 use clap::Parser;
@@ -118,7 +116,20 @@ async fn run_app<B: ratatui::backend::Backend>(
 
     // Spawn event producers
     keyboard::spawn_keyboard_listener(event_tx.clone());
-    timer_task::spawn_timer_task(event_tx.clone()).await;
+    // Start real-time notification handler for subscriptions
+    nrc::notification_handler::spawn_notification_handler(nrc.client.clone(), event_tx.clone());
+
+    // Start timer for pending operations processing only
+    let ops_event_tx = event_tx.clone();
+    tokio::spawn(async move {
+        use tokio::time::{interval, Duration};
+        let mut pending_ops_interval = interval(Duration::from_secs(30));
+
+        loop {
+            pending_ops_interval.tick().await;
+            let _ = ops_event_tx.send(AppEvent::ProcessPendingOperationsTick);
+        }
+    });
 
     // Note: We'll need to create network task differently since we can't clone storage
     // For now, we'll handle network commands directly in the main loop
@@ -149,28 +160,10 @@ async fn run_app<B: ratatui::backend::Backend>(
                     AppEvent::NetworkError { error } => {
                         nrc.last_error = Some(error);
                     }
-                    AppEvent::FetchMessagesTick => {
-                        // Spawn background task to fetch messages
-                        let groups = match &nrc.state {
-                            AppState::Ready { groups, .. } => groups.clone(),
-                            _ => vec![],
-                        };
-                        if !groups.is_empty() {
-                            network_async::spawn_fetch_messages(
-                                groups,
-                                nrc.groups.clone(),
-                                nrc.client.clone(),
-                                event_tx.clone(),
-                            );
-                        }
-                    }
-                    AppEvent::FetchWelcomesTick => {
-                        // Spawn background task to fetch welcomes
-                        network_async::spawn_fetch_welcomes(
-                            nrc.client.clone(),
-                            nrc.keys.clone(),
-                            event_tx.clone(),
-                        );
+                    // Timer-based fetch events removed - now handled by subscription notifications
+                    AppEvent::ProcessPendingOperationsTick => {
+                        // Reserved for future persistent retry functionality
+                        log::debug!("Pending operations tick - no operations to process");
                     }
                     AppEvent::RawMessagesReceived { events } => {
                         // Process the fetched messages in the main loop
