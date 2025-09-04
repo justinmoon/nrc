@@ -83,6 +83,7 @@ jobs:
           success() && 
           github.event_name == 'pull_request' && 
           github.event.pull_request.user.login == github.repository_owner &&
+          github.event.pull_request.draft == false &&
           !env.ACT
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
