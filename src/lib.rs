@@ -366,9 +366,11 @@ impl Nrc {
     }
 
     pub async fn fetch_and_process_welcomes(&mut self) -> Result<()> {
+        // GiftWrap events use an ephemeral pubkey, not the recipient's real pubkey
+        // We need to fetch by the p tag that references the recipient
         let filter = Filter::new()
             .kind(Kind::GiftWrap)
-            .pubkey(self.keys.public_key())
+            .custom_tag(SingleLetterTag::lowercase(Alphabet::P), self.keys.public_key().to_hex())
             .limit(10);
 
         tokio::time::sleep(Duration::from_secs(2)).await;
