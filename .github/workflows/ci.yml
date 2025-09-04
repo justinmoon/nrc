@@ -69,11 +69,24 @@ jobs:
       - name: Run clippy
         run: just clippy
 
+      - name: Cache nostr-rs-relay binary
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/bin/nostr-rs-relay
+          key: nostr-rs-relay-0.9.0-${{ runner.os }}
+      
       - name: Install protoc and nostr-rs-relay
         run: |
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler
-          cargo install nostr-rs-relay
+          mkdir -p ~/.local/bin
+          if [ ! -f ~/.local/bin/nostr-rs-relay ]; then
+            echo "Building nostr-rs-relay (will be cached for next run)..."
+            cargo install --root ~/.local nostr-rs-relay
+          else
+            echo "Using cached nostr-rs-relay"
+          fi
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Run tests
         run: just test
