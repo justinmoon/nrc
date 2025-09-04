@@ -38,11 +38,9 @@ async fn test_welcome_message_regression_and_chat() -> Result<()> {
     // Wait for Alice to receive and process the welcome
     tokio::time::sleep(Duration::from_secs(4)).await;
 
-    // Alice should fetch welcomes and auto-join the group
-    {
-        let mut alice_nrc = alice.nrc.lock().await;
-        alice_nrc.fetch_and_process_welcomes().await?;
-    }
+    // Trigger fetch welcomes event and process it
+    alice.trigger_fetch_welcomes()?;
+    alice.process_pending_events().await?;
 
     // Alice should now have a group too
     assert_eq!(
@@ -52,21 +50,17 @@ async fn test_welcome_message_regression_and_chat() -> Result<()> {
     );
 
     // Now test actual messaging
-    // Bob sends a message to Alice
-    {
-        let mut bob_nrc = bob.nrc.lock().await;
-        bob_nrc.selected_group_index = Some(0); // Select the first group
-        bob_nrc.process_input("Hello Alice!".to_string()).await?;
-    }
+    // Bob selects his first group and sends a message to Alice
+    bob.select_first_group().await?;
+    bob.process_pending_events().await?; // Process the navigation event
+    bob.execute_command("Hello Alice!").await?;
 
     // Wait for message to propagate through relays
     tokio::time::sleep(Duration::from_secs(3)).await;
 
-    // Alice fetches messages
-    {
-        let mut alice_nrc = alice.nrc.lock().await;
-        alice_nrc.fetch_and_process_messages().await?;
-    }
+    // Trigger fetch messages event for Alice and process it
+    alice.trigger_fetch_messages()?;
+    alice.process_pending_events().await?;
 
     // Alice should have received Bob's message
     {
@@ -82,21 +76,17 @@ async fn test_welcome_message_regression_and_chat() -> Result<()> {
         assert_eq!(messages[0].sender, bob_pubkey, "Message should be from Bob");
     }
 
-    // Alice sends a reply
-    {
-        let mut alice_nrc = alice.nrc.lock().await;
-        alice_nrc.selected_group_index = Some(0);
-        alice_nrc.process_input("Hi Bob!".to_string()).await?;
-    }
+    // Alice selects her first group and sends a reply
+    alice.select_first_group().await?;
+    alice.process_pending_events().await?; // Process the navigation event
+    alice.execute_command("Hi Bob!").await?;
 
     // Wait for message to propagate
     tokio::time::sleep(Duration::from_secs(3)).await;
 
-    // Bob fetches messages
-    {
-        let mut bob_nrc = bob.nrc.lock().await;
-        bob_nrc.fetch_and_process_messages().await?;
-    }
+    // Trigger fetch messages event for Bob and process it
+    bob.trigger_fetch_messages()?;
+    bob.process_pending_events().await?;
 
     // Bob should have both messages (his own and Alice's reply)
     {
