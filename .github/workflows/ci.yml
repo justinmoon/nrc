@@ -22,8 +22,15 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install X11 dependencies
-        if: ${{ !env.ACT }}
+      - name: Install just
+        run: |
+          if ! command -v just &> /dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | sudo bash -s -- --to /usr/local/bin
+          else
+            echo "just is already installed: $(just --version)"
+          fi
+      
+      - name: Install dependencies  
         run: |
           sudo apt-get update
           sudo apt-get install -y libxcb-shape0-dev libxcb-xfixes0-dev libxcb1-dev libxcb-render0-dev
@@ -57,16 +64,16 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Check formatting with rustfmt
-        run: cargo fmt --all -- --check
+        run: just fmt-check
 
       - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: just clippy
 
       - name: Install nostr-rs-relay
         run: cargo install nostr-rs-relay
 
-      - name: Run tests with local relay
-        run: bash scripts/test-with-relay.sh --all-features --verbose
+      - name: Run tests
+        run: just test
 
       - name: Auto-merge PR
         if: |
