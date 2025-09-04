@@ -104,7 +104,7 @@ pub struct Nrc {
     pub client: Client,
     pub state: AppState,
     messages: HashMap<GroupId, Vec<Message>>,
-    welcome_rumors: HashMap<PublicKey, UnsignedEvent>,
+    pub welcome_rumors: HashMap<PublicKey, UnsignedEvent>,
     pub groups: HashMap<GroupId, group_types::Group>,
     pub input: String,
     pub selected_group_index: Option<usize>,
@@ -930,6 +930,11 @@ impl Nrc {
         } else {
             Ok(vec![])
         }
+    }
+    
+    /// Test helper: Check if we have a welcome rumor for a pubkey
+    pub fn has_welcome_rumor_for(&self, pubkey: &PublicKey) -> bool {
+        self.welcome_rumors.contains_key(pubkey)
     }
     
     /// Process a single message event that was fetched in the background
