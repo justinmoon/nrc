@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-use crate::{AppEvent, NetworkCommand, Message, Storage, with_storage, with_storage_mut};
+use crate::{AppEvent, NetworkCommand, Message, Storage, with_storage, with_storage_mut, DEFAULT_RELAYS};
 
 pub struct NetworkState {
     pub storage: Storage,
@@ -160,13 +160,11 @@ async fn publish_key_package(state: &mut NetworkState) -> Result<()> {
         .author(state.keys.public_key());
     state.client.subscribe(filter, None).await?;
 
-    let relays = vec![
-        RelayUrl::parse("wss://relay.damus.io")?,
-        RelayUrl::parse("wss://nos.lol")?,
-        RelayUrl::parse("wss://relay.nostr.band")?,
-        RelayUrl::parse("wss://relay.snort.social")?,
-        RelayUrl::parse("wss://nostr.wine")?,
-    ];
+    let relays: Result<Vec<RelayUrl>, _> = DEFAULT_RELAYS
+        .iter()
+        .map(|&url| RelayUrl::parse(url))
+        .collect();
+    let relays = relays?;
     
     let (key_package_content, tags) = with_storage_mut!(state, create_key_package_for_event(&state.keys.public_key(), relays))?;
 
@@ -210,7 +208,7 @@ async fn create_group(state: &mut NetworkState, name: String) -> Result<GroupId>
         None,
         None,
         None,
-        vec![RelayUrl::parse("wss://relay.damus.io")?],
+        vec![RelayUrl::parse(DEFAULT_RELAYS[0])?],
         vec![state.keys.public_key()],
     );
     
