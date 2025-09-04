@@ -140,6 +140,7 @@ pub struct Nrc {
     pub last_error: Option<String>,
     pub flash_message: Option<String>,
     pub show_help: bool,
+    pub help_explicitly_requested: bool,
     profiles: HashMap<PublicKey, Metadata>,
     pub event_tx: Option<mpsc::UnboundedSender<AppEvent>>,
     pub command_tx: Option<mpsc::Sender<NetworkCommand>>,
@@ -203,6 +204,7 @@ impl Nrc {
             last_error: None,
             flash_message: None,
             show_help: false,
+            help_explicitly_requested: false,
             profiles: HashMap::new(),
             event_tx: None,
             command_tx: None,
@@ -603,6 +605,17 @@ impl Nrc {
         Ok(())
     }
 
+    /// Get the currently selected group ID, ensuring consistency between UI and state
+    pub fn get_selected_group(&self) -> Option<GroupId> {
+        if let AppState::Ready { ref groups, .. } = &self.state {
+            self.selected_group_index
+                .and_then(|idx| groups.get(idx))
+                .cloned()
+        } else {
+            None
+        }
+    }
+
     pub fn get_messages(&self, group_id: &GroupId) -> Vec<Message> {
         self.messages.get(group_id).cloned().unwrap_or_default()
     }
@@ -772,16 +785,12 @@ impl Nrc {
         }
 
         // Otherwise it's a message - send to selected chat
-        if let AppState::Ready { ref groups, .. } = &self.state {
-            if let Some(idx) = self.selected_group_index {
-                if let Some(group_id) = groups.get(idx) {
-                    if let Err(e) = self.send_message(group_id.clone(), input).await {
-                        self.last_error = Some(format!("Failed to send: {e}"));
-                    }
-                }
-            } else {
-                self.last_error = Some("No chat selected".to_string());
+        if let Some(group_id) = self.get_selected_group() {
+            if let Err(e) = self.send_message(group_id, input).await {
+                self.last_error = Some(format!("Failed to send: {e}"));
             }
+        } else {
+            self.last_error = Some("No chat selected".to_string());
         }
 
         Ok(false)
@@ -826,6 +835,7 @@ impl Nrc {
         // Handle help command
         if input == "/help" || input == "/h" {
             self.show_help = true;
+            self.help_explicitly_requested = true;
             return Ok(false);
         }
 
@@ -917,14 +927,19 @@ impl Nrc {
                             {
                                 let mut updated_groups = groups.clone();
                                 if !updated_groups.contains(&group_id) {
-                                    updated_groups.push(group_id);
-                                    // Select the newly created group
-                                    self.selected_group_index = Some(updated_groups.len() - 1);
+                                    updated_groups.push(group_id.clone());
                                 }
+                                // Update state first, then set selected index to ensure consistency
                                 self.state = AppState::Ready {
                                     key_package_published: *key_package_published,
-                                    groups: updated_groups,
+                                    groups: updated_groups.clone(),
                                 };
+                                // Now safely select the newly created group
+                                if let Some(idx) =
+                                    updated_groups.iter().position(|g| g == &group_id)
+                                {
+                                    self.selected_group_index = Some(idx);
+                                }
                             }
                         }
                         Err(e) => {
@@ -953,6 +968,7 @@ impl Nrc {
 
     pub fn dismiss_help(&mut self) {
         self.show_help = false;
+        self.help_explicitly_requested = false;
     }
 
     pub fn get_display_name_for_pubkey(&self, pubkey: &PublicKey) -> String {
@@ -1254,11 +1270,15 @@ impl Nrc {
                             {
                                 if !groups.contains(&group_id) {
                                     groups.push(group_id.clone());
-                                    self.selected_group_index = Some(groups.len() - 1);
+                                    // Update state first, then set selected index to ensure consistency
                                     self.state = AppState::Ready {
                                         key_package_published,
-                                        groups,
+                                        groups: groups.clone(),
                                     };
+                                    // Now safely select the newly joined group
+                                    if let Some(idx) = groups.iter().position(|g| g == &group_id) {
+                                        self.selected_group_index = Some(idx);
+                                    }
                                     self.flash_message =
                                         Some("Joined new group via invitation!".to_string());
                                 }

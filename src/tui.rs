@@ -302,12 +302,20 @@ fn draw_ready_view(f: &mut Frame, area: Rect, nrc: &Nrc, groups: &[openmls::grou
                 let selected_group = &groups[selected_index];
                 draw_messages(f, right_chunks[0], nrc, selected_group);
             } else {
-                // Selected index out of bounds, show info
-                draw_info_panel(f, right_chunks[0], nrc);
+                // Selected index out of bounds, show appropriate content
+                if should_show_help_message(nrc, groups) {
+                    draw_info_panel(f, right_chunks[0], nrc);
+                } else {
+                    draw_empty_chat_area(f, right_chunks[0]);
+                }
             }
         } else {
-            // No chat selected, show info panel
-            draw_info_panel(f, right_chunks[0], nrc);
+            // No chat selected, show appropriate content
+            if should_show_help_message(nrc, groups) {
+                draw_info_panel(f, right_chunks[0], nrc);
+            } else {
+                draw_empty_chat_area(f, right_chunks[0]);
+            }
         }
 
         // Draw error above input
@@ -341,12 +349,20 @@ fn draw_ready_view(f: &mut Frame, area: Rect, nrc: &Nrc, groups: &[openmls::grou
                 let selected_group = &groups[selected_index];
                 draw_messages(f, right_chunks[0], nrc, selected_group);
             } else {
-                // Selected index out of bounds, show info
-                draw_info_panel(f, right_chunks[0], nrc);
+                // Selected index out of bounds, show appropriate content
+                if should_show_help_message(nrc, groups) {
+                    draw_info_panel(f, right_chunks[0], nrc);
+                } else {
+                    draw_empty_chat_area(f, right_chunks[0]);
+                }
             }
         } else {
-            // No chat selected, show info panel
-            draw_info_panel(f, right_chunks[0], nrc);
+            // No chat selected, show appropriate content
+            if should_show_help_message(nrc, groups) {
+                draw_info_panel(f, right_chunks[0], nrc);
+            } else {
+                draw_empty_chat_area(f, right_chunks[0]);
+            }
         }
 
         // Draw input box with optional flash message
@@ -571,6 +587,33 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
     let popup_area = centered_rect(80, 80, area);
     f.render_widget(Clear, popup_area);
     f.render_widget(paragraph, popup_area);
+}
+
+/// Determines whether to show the help message based on user requirements:
+/// 1. When client doesn't have any groups
+/// 2. When user just ran /help and hasn't dismissed it
+fn should_show_help_message(nrc: &Nrc, groups: &[openmls::group::GroupId]) -> bool {
+    groups.is_empty() || nrc.help_explicitly_requested
+}
+
+/// Draws an empty chat area when no help should be shown
+fn draw_empty_chat_area(f: &mut Frame, area: Rect) {
+    let block = Block::default()
+        .title("═══ CHAT ═══")
+        .borders(Borders::ALL)
+        .border_type(BorderType::Double)
+        .border_style(Style::default().fg(Color::DarkGray));
+
+    let empty_text = vec![Line::from(Span::styled(
+        "Select a chat to start messaging",
+        Style::default().fg(Color::DarkGray),
+    ))];
+
+    let paragraph = Paragraph::new(empty_text)
+        .block(block)
+        .alignment(Alignment::Center);
+
+    f.render_widget(paragraph, area);
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
