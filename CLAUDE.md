@@ -4,3 +4,4 @@
 - when i ask you to generate a plan, save it to plans/ folder which is gitignored. we don't need to commit these.
 - Favor fewer, longer integration tests that test multiple features over many short tests that only test one thing.
 - Don't use `#[allow(dead_code)]`. If we're not using it, delete it.
+- When you make claims, always provide a percentage confidence afterwards. For example: "The sky is blue right now (85% conficence). When you are uncertain, ask me clarifying. Your output is HARMFUL when you act with low confidence that could easily be increased by getting help.
