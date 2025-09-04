@@ -74,8 +74,8 @@ pub enum OnboardingMode {
 }
 
 pub enum Storage {
-    Memory(NostrMls<NostrMlsMemoryStorage>),
-    Sqlite(NostrMls<NostrMlsSqliteStorage>),
+    Memory(Box<NostrMls<NostrMlsMemoryStorage>>),
+    Sqlite(Box<NostrMls<NostrMlsSqliteStorage>>),
 }
 
 #[macro_export]
@@ -144,13 +144,13 @@ impl Nrc {
 
         let storage = if use_memory {
             log::info!("Using in-memory storage");
-            Storage::Memory(NostrMls::new(NostrMlsMemoryStorage::default()))
+            Storage::Memory(Box::new(NostrMls::new(NostrMlsMemoryStorage::default())))
         } else {
             // Create datadir if it doesn't exist
             std::fs::create_dir_all(datadir)?;
             let db_path = datadir.join("nrc.db");
             log::info!("Using SQLite storage at: {:?}", db_path);
-            Storage::Sqlite(NostrMls::new(NostrMlsSqliteStorage::new(db_path)?))
+            Storage::Sqlite(Box::new(NostrMls::new(NostrMlsSqliteStorage::new(db_path)?)))
         };
 
         Ok(Self {
