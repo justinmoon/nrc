@@ -1,8 +1,8 @@
+use crate::AppEvent;
+use crossterm::event::{self, Event};
 use std::thread;
 use std::time::Duration;
-use crossterm::event::{self, Event};
 use tokio::sync::mpsc;
-use crate::AppEvent;
 
 pub fn spawn_keyboard_listener(tx: mpsc::UnboundedSender<AppEvent>) {
     thread::spawn(move || {
