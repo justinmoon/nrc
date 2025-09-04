@@ -12,6 +12,24 @@ use std::str::FromStr;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
+/// Get default relay URLs - uses local relay for tests when TEST_USE_LOCAL_RELAY is set
+pub fn get_default_relays() -> &'static [&'static str] {
+    #[cfg(test)]
+    {
+        if std::env::var("TEST_USE_LOCAL_RELAY").is_ok() {
+            return &["ws://127.0.0.1:8080"];
+        }
+    }
+
+    &[
+        "wss://relay.damus.io",
+        "wss://nos.lol",
+        "wss://relay.nostr.band",
+        "wss://relay.snort.social",
+        "wss://nostr.wine",
+    ]
+}
+
 /// Default relay URLs used throughout the application
 pub const DEFAULT_RELAYS: &[&str] = &[
     "wss://relay.damus.io",
@@ -138,7 +156,7 @@ impl Nrc {
         let client = Client::builder().signer(keys.clone()).build();
 
         // Add multiple relays for redundancy
-        for &relay in DEFAULT_RELAYS {
+        for &relay in get_default_relays() {
             if let Err(e) = client.add_relay(relay).await {
                 log::warn!("Failed to add relay {relay}: {e}");
             }
@@ -196,7 +214,7 @@ impl Nrc {
             .author(self.keys.public_key());
         self.client.subscribe(filter, None).await?;
 
-        let relays: Result<Vec<RelayUrl>, _> = DEFAULT_RELAYS
+        let relays: Result<Vec<RelayUrl>, _> = get_default_relays()
             .iter()
             .map(|&url| RelayUrl::parse(url))
             .collect();
@@ -283,7 +301,7 @@ impl Nrc {
             None,
             None,
             None,
-            vec![RelayUrl::parse(DEFAULT_RELAYS[0])?],
+            vec![RelayUrl::parse(get_default_relays()[0])?],
             vec![self.keys.public_key()],
         );
 
@@ -607,7 +625,7 @@ impl Nrc {
         self.keys = keys;
         self.client = Client::builder().signer(self.keys.clone()).build();
 
-        for &relay in DEFAULT_RELAYS {
+        for &relay in get_default_relays() {
             if let Err(e) = self.client.add_relay(relay).await {
                 log::warn!("Failed to add relay {relay}: {e}");
             }
