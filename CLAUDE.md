@@ -1,3 +1,4 @@
 - if you have questions about how nostr+mls works, look at docs/EE.md which is the specification for this protocol
 - every slash command should have a long and short form, e.g. /join and /j for short
 - when i ask you to generate a plan, save it to plans/ folder which is gitignored. we don't need to commit these.
+- Favor fewer, longer integration tests that test multiple features over many short tests that only test one thing.
