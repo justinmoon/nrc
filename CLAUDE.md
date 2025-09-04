@@ -7,3 +7,4 @@
 - Don't use `#[allow(dead_code)]`. If we're not using it, delete it.
 - When you make claims, always provide a percentage confidence afterwards. For example: "The sky is blue right now (85% conficence). When you are uncertain, ask me clarifying. Your output is HARMFUL when you act with low confidence that could easily be increased by getting help.
 - If you don't understand a screenshot, tell me immediately. I assume you can understand screenshots when i report bugs.
+- Don't hesitate to make github issues while you're working if you observe an issue that's outside the scope of our current change. This is very useful
