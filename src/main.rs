@@ -175,7 +175,7 @@ async fn run_app<B: ratatui::backend::Backend>(
                     AppEvent::ProcessPendingOperationsTick => {
                         // Process any pending operations in the retry queue
                         if let Err(e) = nrc.process_pending_operations().await {
-                            log::error!("Failed to process pending operations: {}", e);
+                            log::error!("Failed to process pending operations: {e}");
                         }
 
                         // Periodically clean up old operations
@@ -185,7 +185,7 @@ async fn run_app<B: ratatui::backend::Backend>(
                             if CLEANUP_COUNTER % 10 == 0 {
                                 // Every 10 ticks (5 minutes), clean up old operations
                                 if let Err(e) = nrc.cleanup_old_operations().await {
-                                    log::error!("Failed to cleanup old operations: {}", e);
+                                    log::error!("Failed to cleanup old operations: {e}");
                                 }
                             }
                         }
