@@ -1,3 +1,4 @@
+- KEEP IT SIMPLE
 - if you have questions about how nostr+mls works, look at docs/EE.md which is the specification for this protocol
 - every slash command should have a long and short form, e.g. /join and /j for short
 - when i ask you to generate a plan, save it to plans/ folder which is gitignored. we don't need to commit these.
