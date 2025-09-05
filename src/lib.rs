@@ -154,19 +154,24 @@ pub struct Nrc {
 
 impl Nrc {
     fn load_keys_from_keyring() -> Result<Option<Keys>> {
-        let entry = Entry::new("nrc", "nsec")?;
-        match entry.get_password() {
-            Ok(nsec) => {
-                log::info!("Found existing nsec in keyring");
-                Ok(Some(Keys::parse(&nsec)?))
-            }
-            Err(keyring::Error::NoEntry) => {
-                log::info!("No nsec found in keyring");
-                Ok(None)
-            }
+        match Entry::new("nrc", "nsec") {
+            Ok(entry) => match entry.get_password() {
+                Ok(nsec) => {
+                    log::info!("Found existing nsec in keyring");
+                    Ok(Some(Keys::parse(&nsec)?))
+                }
+                Err(keyring::Error::NoEntry) => {
+                    log::info!("No nsec found in keyring");
+                    Ok(None)
+                }
+                Err(e) => {
+                    log::warn!("Keyring error: {e}");
+                    Ok(None) // Don't fail, just return None
+                }
+            },
             Err(e) => {
-                log::warn!("Keyring error: {e}");
-                Err(e.into())
+                log::warn!("Keyring not available: {e}");
+                Ok(None) // Don't fail if keyring isn't available
             }
         }
     }
@@ -174,10 +179,22 @@ impl Nrc {
     fn save_keys_to_keyring(keys: &Keys) -> Result<()> {
         use nostr_sdk::prelude::ToBech32;
         let nsec = keys.secret_key().to_bech32()?;
-        let entry = Entry::new("nrc", "nsec")?;
-        entry.set_password(&nsec)?;
-        log::info!("Saved nsec to keyring");
-        Ok(())
+        match Entry::new("nrc", "nsec") {
+            Ok(entry) => match entry.set_password(&nsec) {
+                Ok(_) => {
+                    log::info!("Saved nsec to keyring");
+                    Ok(())
+                }
+                Err(e) => {
+                    log::warn!("Failed to save to keyring: {e}");
+                    Err(e.into())
+                }
+            },
+            Err(e) => {
+                log::warn!("Keyring not available for saving: {e}");
+                Err(e.into())
+            }
+        }
     }
 
     pub async fn new(datadir: &Path, use_memory: bool) -> Result<Self> {
