@@ -1133,7 +1133,7 @@ impl Nrc {
                 // Event bus will handle it, but we still need to return true to quit
                 return Ok(true);
             }
-            return Ok(true); // Fallback
+            return Ok(true);
         }
 
         // Handle profile fetch command
@@ -1148,7 +1148,7 @@ impl Nrc {
                 return Ok(false);
             }
 
-            // Fallback to direct handling if event bus fails
+            // Direct handling
             if let Some(npub_str) = npub {
                 if let Ok(pubkey) = PublicKey::from_bech32(&npub_str) {
                     self.fetch_profile(&pubkey).await?;
@@ -1170,7 +1170,7 @@ impl Nrc {
                 return Ok(false);
             }
 
-            // Fallback to direct handling
+            // Direct handling
             use clipboard::ClipboardContext;
             use clipboard::ClipboardProvider;
             use nostr_sdk::prelude::ToBech32;
@@ -1219,7 +1219,7 @@ impl Nrc {
                 } else {
                     return Ok(false);
                 }
-                // Fallback
+                // Direct handling
                 self.next_group();
                 return Ok(false);
             } else if input == "/prev" {
@@ -1228,7 +1228,7 @@ impl Nrc {
                 } else {
                     return Ok(false);
                 }
-                // Fallback
+                // Direct handling
                 self.prev_group();
                 return Ok(false);
             }
