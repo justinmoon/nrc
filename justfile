@@ -31,10 +31,15 @@ act-ci fresh='':
 run client-name *args='':
     #!/bin/bash
     set -e
-    tmpdir="/tmp/{{client-name}}"
-    echo "Setting up client '{{client-name}}' at ${tmpdir} (95% confidence)"
-    rm -rf "${tmpdir}" 2>/dev/null || true
-    mkdir -p "${tmpdir}"
+    if [[ "{{client-name}}" == "tmp" ]]; then
+        tmpdir=$(mktemp -d)
+        echo "Setting up temporary client at ${tmpdir} (95% confidence)"
+    else
+        tmpdir="/tmp/{{client-name}}"
+        echo "Setting up client '{{client-name}}' at ${tmpdir} (95% confidence)"
+        rm -rf "${tmpdir}" 2>/dev/null || true
+        mkdir -p "${tmpdir}"
+    fi
     cargo run -- --datadir "${tmpdir}" {{args}}
 
 # Default recipe (show available commands)
