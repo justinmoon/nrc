@@ -112,7 +112,7 @@ pub async fn spawn_network_task(
                     }
                 }
                 NetworkCommand::SendMessage { group_id, content } => {
-                    match send_message(&mut state, group_id, content).await {
+                    match send_message(&mut state, group_id, content, event_tx.clone()).await {
                         Ok(()) => {
                             // Message sent successfully
                         }
@@ -246,7 +246,7 @@ async fn join_group(state: &mut NetworkState, npub: String) -> Result<GroupId> {
     Ok(group_id)
 }
 
-async fn send_message(state: &mut NetworkState, group_id: GroupId, content: String) -> Result<()> {
+async fn send_message(state: &mut NetworkState, group_id: GroupId, content: String, event_tx: mpsc::UnboundedSender<AppEvent>) -> Result<()> {
     let message = with_storage_mut!(state, create_message(
         &state.keys.public_key(),
         group_id.as_slice().to_vec(),
@@ -257,8 +257,16 @@ async fn send_message(state: &mut NetworkState, group_id: GroupId, content: Stri
         .tags(message.rumor.rumor_tags.clone())
         .build_unsigned(state.keys.public_key());
 
-    let gift_wrap = EventBuilder::gift_wrap(&state.keys, &state.keys.public_key(), rumor, None)?;
+    let gift_wrap = EventBuilder::gift_wrap(&state.keys, &state.keys.public_key(), rumor.clone(), None)?;
     state.client.send_event(gift_wrap).await?;
+    
+    // Add our own message to local history immediately
+    let local_message = Message {
+        content,
+        sender: state.keys.public_key(),
+        timestamp: rumor.created_at,
+    };
+    let _ = event_tx.send(AppEvent::MessageReceived { group_id, message: local_message });
     
     Ok(())
 }
