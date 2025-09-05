@@ -26,14 +26,11 @@ async fn test_welcome_message_regression_and_chat() -> Result<()> {
     // Bob joins with Alice's npub (like user would type /j <npub>)
     bob.execute_command(&format!("/j {alice_npub}")).await?;
 
-    // Process the internal events from the event bus - do multiple cycles to handle chained events
-    for _ in 0..5 {
-        bob.process_internal_events().await?;
-        tokio::time::sleep(Duration::from_millis(100)).await; // Short delay between cycles
-    }
-
-    // Give it a moment to process
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Wait for Bob to have a welcome rumor for Alice (with timeout)
+    bob.wait_for_condition(
+        || async { bob.has_welcome_rumor_for(&alice_pubkey).await },
+        Duration::from_secs(5)
+    ).await?;
 
     // CRITICAL TEST: Bob should have a welcome rumor for Alice
     assert!(
@@ -176,14 +173,11 @@ async fn test_welcome_sent_over_network() -> Result<()> {
     // Bob joins Alice
     bob.execute_command(&format!("/j {alice_npub}")).await?;
 
-    // Process the internal events from the event bus - do multiple cycles to handle chained events
-    for _ in 0..5 {
-        bob.process_internal_events().await?;
-        tokio::time::sleep(Duration::from_millis(100)).await; // Short delay between cycles
-    }
-
-    // Wait a bit for async operations
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    // Wait for Bob to create a group (with timeout)
+    bob.wait_for_condition(
+        || async { bob.group_count().await >= 1 },
+        Duration::from_secs(3)
+    ).await?;
 
     // Verify Bob created a group
     assert_eq!(

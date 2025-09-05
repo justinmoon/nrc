@@ -4,6 +4,7 @@ use nostr_sdk::prelude::*;
 use nrc::{AppEvent, Nrc};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{mpsc, Mutex};
 
 /// Test client that wraps Nrc for testing
@@ -105,6 +106,35 @@ impl TestClient {
     pub async fn process_internal_events(&self) -> Result<()> {
         let mut nrc = self.nrc.lock().await;
         nrc.process_internal_events().await?;
+        Ok(())
+    }
+
+    /// Wait for a condition to be true, processing events until it is or timeout occurs
+    pub async fn wait_for_condition<F, Fut>(&self, condition: F, timeout: Duration) -> Result<()>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = bool>,
+    {
+        let start = tokio::time::Instant::now();
+        
+        while !condition().await && start.elapsed() < timeout {
+            // Process internal events from event bus
+            self.process_internal_events().await?;
+            
+            // Process regular events from queue
+            self.process_pending_events().await?;
+            
+            // Small delay between checks - faster in development
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        
+        if !condition().await {
+            return Err(anyhow::anyhow!(
+                "Condition not met within timeout of {:?}", 
+                timeout
+            ));
+        }
+        
         Ok(())
     }
 
