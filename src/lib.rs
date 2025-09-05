@@ -159,25 +159,25 @@ impl Nrc {
         if !nsec_file.exists() {
             return Ok(None);
         }
-        
+
         let nsec = std::fs::read_to_string(&nsec_file)?;
         let nsec = nsec.trim();
-        
+
         if nsec.is_empty() {
             return Ok(None);
         }
-        
+
         Ok(Some(Keys::parse(nsec)?))
     }
-    
+
     fn save_keys_to_file(datadir: &Path, keys: &Keys) -> Result<()> {
         use nostr_sdk::prelude::ToBech32;
         let nsec = keys.secret_key().to_bech32()?;
         let nsec_file = datadir.join(".nsec");
-        
+
         // Write with restricted permissions
         std::fs::write(&nsec_file, nsec)?;
-        
+
         // Set permissions to 0600 on Unix
         #[cfg(unix)]
         {
@@ -186,11 +186,11 @@ impl Nrc {
             perms.set_mode(0o600);
             std::fs::set_permissions(&nsec_file, perms)?;
         }
-        
+
         log::info!("Saved nsec to filesystem");
         Ok(())
     }
-    
+
     fn load_keys_from_keyring() -> Result<Option<Keys>> {
         match Entry::new("nrc", "nsec") {
             Ok(entry) => match entry.get_password() {
@@ -239,8 +239,8 @@ impl Nrc {
         // Determine if we should use keyring (not in tests/CI)
         let use_keyring = !use_memory 
             && std::env::var("CI").is_err()  // Not in CI
-            && std::env::var("DISABLE_KEYRING").is_err();  // Not explicitly disabled
-        
+            && std::env::var("DISABLE_KEYRING").is_err(); // Not explicitly disabled
+
         let (keys, should_skip_onboarding) = if !use_keyring {
             // For tests/CI: try to load from filesystem
             match Self::load_keys_from_file(datadir) {
@@ -268,7 +268,9 @@ impl Nrc {
                     // Check filesystem as fallback
                     match Self::load_keys_from_file(datadir) {
                         Ok(Some(k)) => {
-                            log::info!("Loaded existing keys from filesystem (migrating to keyring)");
+                            log::info!(
+                                "Loaded existing keys from filesystem (migrating to keyring)"
+                            );
                             // Try to save to keyring for next time
                             let _ = Self::save_keys_to_keyring(&k);
                             (k, true)
@@ -288,7 +290,7 @@ impl Nrc {
                     // Fall back to filesystem
                     match Self::load_keys_from_file(datadir) {
                         Ok(Some(k)) => (k, true),
-                        _ => (Keys::generate(), false)
+                        _ => (Keys::generate(), false),
                     }
                 }
             }
