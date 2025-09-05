@@ -1,6 +1,5 @@
 use anyhow::Result;
 use crossterm::event::KeyEvent;
-use keyring::Entry;
 use nostr_mls::{groups::NostrGroupConfigData, messages::MessageProcessingResult, NostrMls};
 use nostr_mls_memory_storage::NostrMlsMemoryStorage;
 use nostr_mls_sqlite_storage::NostrMlsSqliteStorage;
@@ -8,7 +7,7 @@ use nostr_mls_storage::groups::types as group_types;
 use nostr_sdk::prelude::*;
 use openmls::group::GroupId;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::str::FromStr;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -134,7 +133,6 @@ macro_rules! with_storage_mut {
 
 pub struct Nrc {
     storage: Storage,
-    datadir: PathBuf,
     pub keys: Keys,
     pub client: Client,
     pub state: AppState,
@@ -154,148 +152,8 @@ pub struct Nrc {
 }
 
 impl Nrc {
-    fn load_keys_from_file(datadir: &Path) -> Result<Option<Keys>> {
-        let nsec_file = datadir.join(".nsec");
-        if !nsec_file.exists() {
-            return Ok(None);
-        }
-
-        let nsec = std::fs::read_to_string(&nsec_file)?;
-        let nsec = nsec.trim();
-
-        if nsec.is_empty() {
-            return Ok(None);
-        }
-
-        Ok(Some(Keys::parse(nsec)?))
-    }
-
-    fn save_keys_to_file(datadir: &Path, keys: &Keys) -> Result<()> {
-        use nostr_sdk::prelude::ToBech32;
-        let nsec = keys.secret_key().to_bech32()?;
-        let nsec_file = datadir.join(".nsec");
-
-        // Write with restricted permissions
-        std::fs::write(&nsec_file, nsec)?;
-
-        // Set permissions to 0600 on Unix
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&nsec_file)?.permissions();
-            perms.set_mode(0o600);
-            std::fs::set_permissions(&nsec_file, perms)?;
-        }
-
-        log::info!("Saved nsec to filesystem");
-        Ok(())
-    }
-
-    fn load_keys_from_keyring() -> Result<Option<Keys>> {
-        match Entry::new("nrc", "nsec") {
-            Ok(entry) => match entry.get_password() {
-                Ok(nsec) => {
-                    log::info!("Found existing nsec in keyring");
-                    Ok(Some(Keys::parse(&nsec)?))
-                }
-                Err(keyring::Error::NoEntry) => {
-                    log::info!("No nsec found in keyring");
-                    Ok(None)
-                }
-                Err(e) => {
-                    log::warn!("Keyring error: {e}");
-                    Ok(None) // Don't fail, just return None
-                }
-            },
-            Err(e) => {
-                log::warn!("Keyring not available: {e}");
-                Ok(None) // Don't fail if keyring isn't available
-            }
-        }
-    }
-
-    fn save_keys_to_keyring(keys: &Keys) -> Result<()> {
-        use nostr_sdk::prelude::ToBech32;
-        let nsec = keys.secret_key().to_bech32()?;
-        match Entry::new("nrc", "nsec") {
-            Ok(entry) => match entry.set_password(&nsec) {
-                Ok(_) => {
-                    log::info!("Saved nsec to keyring");
-                    Ok(())
-                }
-                Err(e) => {
-                    log::warn!("Failed to save to keyring: {e}");
-                    Err(e.into())
-                }
-            },
-            Err(e) => {
-                log::warn!("Keyring not available for saving: {e}");
-                Err(e.into())
-            }
-        }
-    }
-
     pub async fn new(datadir: &Path, use_memory: bool) -> Result<Self> {
-        // Determine if we should use keyring (not in tests/CI)
-        let use_keyring = !use_memory
-            && std::env::var("CI").is_err() // Not in CI
-            && std::env::var("DISABLE_KEYRING").is_err(); // Not explicitly disabled
-
-        let (keys, should_skip_onboarding) = if !use_keyring {
-            // For tests/CI: try to load from filesystem
-            match Self::load_keys_from_file(datadir) {
-                Ok(Some(k)) => {
-                    log::info!("Loaded existing keys from filesystem");
-                    (k, true)
-                }
-                Ok(None) => {
-                    log::info!("No existing keys found in filesystem");
-                    (Keys::generate(), false)
-                }
-                Err(e) => {
-                    log::warn!("Failed to load keys from filesystem: {e}");
-                    (Keys::generate(), false)
-                }
-            }
-        } else {
-            // Production: try keyring first, fall back to filesystem
-            match Self::load_keys_from_keyring() {
-                Ok(Some(k)) => {
-                    log::info!("Loaded existing keys from keyring");
-                    (k, true)
-                }
-                Ok(None) => {
-                    // Check filesystem as fallback
-                    match Self::load_keys_from_file(datadir) {
-                        Ok(Some(k)) => {
-                            log::info!(
-                                "Loaded existing keys from filesystem (migrating to keyring)"
-                            );
-                            // Try to save to keyring for next time
-                            let _ = Self::save_keys_to_keyring(&k);
-                            (k, true)
-                        }
-                        Ok(None) => {
-                            log::info!("No existing keys found");
-                            (Keys::generate(), false)
-                        }
-                        Err(e) => {
-                            log::warn!("Failed to load keys: {e}");
-                            (Keys::generate(), false)
-                        }
-                    }
-                }
-                Err(e) => {
-                    log::warn!("Keyring error: {e}, checking filesystem");
-                    // Fall back to filesystem
-                    match Self::load_keys_from_file(datadir) {
-                        Ok(Some(k)) => (k, true),
-                        _ => (Keys::generate(), false),
-                    }
-                }
-            }
-        };
-
+        let keys = Keys::generate();
         let client = Client::builder().signer(keys.clone()).build();
 
         // Add multiple relays for redundancy
@@ -323,24 +181,14 @@ impl Nrc {
             )?)))
         };
 
-        // Set initial state based on whether we have keys
-        let initial_state = if should_skip_onboarding {
-            log::info!("Keys exist in keyring, will initialize after setup");
-            // We'll initialize in the main loop after event channels are set up
-            AppState::Initializing
-        } else {
-            AppState::Onboarding {
-                input: String::new(),
-                mode: OnboardingMode::Choose,
-            }
-        };
-
         Ok(Self {
             storage,
-            datadir: datadir.to_path_buf(),
             keys,
             client,
-            state: initial_state,
+            state: AppState::Onboarding {
+                input: String::new(),
+                mode: OnboardingMode::Choose,
+            },
             messages: HashMap::new(),
             welcome_rumors: HashMap::new(),
             groups: HashMap::new(),
@@ -738,24 +586,6 @@ impl Nrc {
     pub async fn initialize_with_display_name(&mut self, display_name: String) -> Result<()> {
         self.state = AppState::Initializing;
 
-        // Save keys - use filesystem in CI/tests, keyring in production
-        if !matches!(self.storage, Storage::Memory(_)) {
-            if std::env::var("CI").is_ok() || std::env::var("DISABLE_KEYRING").is_ok() {
-                // CI/tests: save to filesystem
-                if let Err(e) = Self::save_keys_to_file(&self.datadir, &self.keys) {
-                    log::warn!("Failed to save keys to filesystem: {e}");
-                }
-            } else {
-                // Production: try keyring, fall back to filesystem
-                if let Err(e) = Self::save_keys_to_keyring(&self.keys) {
-                    log::warn!("Failed to save keys to keyring: {e}, using filesystem");
-                    if let Err(e) = Self::save_keys_to_file(&self.datadir, &self.keys) {
-                        log::warn!("Failed to save keys to filesystem: {e}");
-                    }
-                }
-            }
-        }
-
         // Publish profile with display name
         self.publish_profile(display_name).await?;
 
@@ -799,24 +629,6 @@ impl Nrc {
         let keys = Keys::parse(&nsec)?;
         self.keys = keys;
         self.client = Client::builder().signer(self.keys.clone()).build();
-
-        // Save keys - use filesystem in CI/tests, keyring in production
-        if !matches!(self.storage, Storage::Memory(_)) {
-            if std::env::var("CI").is_ok() || std::env::var("DISABLE_KEYRING").is_ok() {
-                // CI/tests: save to filesystem
-                if let Err(e) = Self::save_keys_to_file(&self.datadir, &self.keys) {
-                    log::warn!("Failed to save keys to filesystem: {e}");
-                }
-            } else {
-                // Production: try keyring, fall back to filesystem
-                if let Err(e) = Self::save_keys_to_keyring(&self.keys) {
-                    log::warn!("Failed to save keys to keyring: {e}, using filesystem");
-                    if let Err(e) = Self::save_keys_to_file(&self.datadir, &self.keys) {
-                        log::warn!("Failed to save keys to filesystem: {e}");
-                    }
-                }
-            }
-        }
 
         for &relay in get_default_relays() {
             if let Err(e) = self.client.add_relay(relay).await {
