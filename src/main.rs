@@ -178,6 +178,9 @@ async fn run_app<B: ratatui::backend::Backend>(
                     AppEvent::ProcessPendingOperationsTick => {
                         // Reserved for future persistent retry functionality
                         log::debug!("Pending operations tick - no operations to process");
+
+                        // Process internal events from the event bus
+                        nrc.process_internal_events().await?;
                     }
                     AppEvent::RawMessagesReceived { events } => {
                         // Process the fetched messages in the main loop
@@ -234,6 +237,13 @@ async fn handle_key_press(
     key: KeyEvent,
     _command_tx: &mpsc::Sender<NetworkCommand>,
 ) -> Result<bool> {
+    // NEW: Send to event bus first (parallel processing for now)
+    if let Some(event_bus) = nrc.event_bus() {
+        if let Err(e) = event_bus.emit(nrc::event_bus::UnifiedEvent::KeyPress(key)) {
+            log::debug!("Failed to emit key press event: {e}");
+        }
+    }
+
     // Only allow Ctrl+C for emergency exit
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
         return Ok(true);

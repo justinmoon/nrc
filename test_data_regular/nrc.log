@@ -1,0 +1,9 @@
+[2025-09-05 11:33:08.294 INFO src/main.rs:101] Starting NRC with datadir: "./test_data_regular", memory: true, event_bus: false
+[2025-09-05 11:33:08.295 INFO src/main.rs:114] Using regular architecture
+[2025-09-05 11:33:08.295 INFO /Users/justin/code/nrc/nrc-bare/worktrees/please-event-bu/src/lib.rs:255] No existing keys found in filesystem
+[2025-09-05 11:33:08.767 DEBUG /Users/justin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tungstenite-0.26.2/src/handshake/client.rs:101] Client handshake done.
+[2025-09-05 11:33:08.900 DEBUG /Users/justin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tungstenite-0.26.2/src/handshake/client.rs:101] Client handshake done.
+[2025-09-05 11:33:08.911 DEBUG /Users/justin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tungstenite-0.26.2/src/handshake/client.rs:101] Client handshake done.
+[2025-09-05 11:33:08.957 DEBUG /Users/justin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tungstenite-0.26.2/src/handshake/client.rs:101] Client handshake done.
+[2025-09-05 11:33:08.996 DEBUG /Users/justin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tungstenite-0.26.2/src/handshake/client.rs:101] Client handshake done.
+[2025-09-05 11:33:10.303 INFO /Users/justin/code/nrc/nrc-bare/worktrees/please-event-bu/src/lib.rs:317] Using in-memory storage

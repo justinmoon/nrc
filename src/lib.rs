@@ -1,3 +1,4 @@
+use crate::event_bus::{EventBus, UnifiedEvent};
 use anyhow::Result;
 use crossterm::event::KeyEvent;
 use nostr_mls::{groups::NostrGroupConfigData, messages::MessageProcessingResult, NostrMls};
@@ -11,6 +12,8 @@ use std::str::FromStr;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
+pub mod event_bus;
+pub mod handlers;
 pub mod notification_handler;
 /// Get default relay URLs - uses local relay for tests when TEST_USE_LOCAL_RELAY is set
 pub fn get_default_relays() -> &'static [&'static str] {
@@ -123,6 +126,10 @@ pub struct Nrc {
     profiles: HashMap<PublicKey, Metadata>,
     pub event_tx: Option<mpsc::UnboundedSender<AppEvent>>,
     pub command_tx: Option<mpsc::Sender<NetworkCommand>>,
+
+    // New event bus fields
+    event_bus: Option<EventBus>,
+    internal_event_rx: Option<mpsc::UnboundedReceiver<UnifiedEvent>>,
 }
 
 impl Nrc {
@@ -148,6 +155,10 @@ impl Nrc {
         log::info!("Using SQLite storage at: {db_path:?}");
         let storage = Box::new(NostrMls::new(NostrMlsSqliteStorage::new(db_path)?));
 
+        // Initialize event bus
+        let mut event_bus = EventBus::new();
+        let internal_event_rx = event_bus.take_receiver();
+
         Ok(Self {
             storage,
             keys,
@@ -169,11 +180,90 @@ impl Nrc {
             profiles: HashMap::new(),
             event_tx: None,
             command_tx: None,
+            event_bus: Some(event_bus),
+            internal_event_rx,
         })
     }
 
     pub fn public_key(&self) -> PublicKey {
         self.keys.public_key()
+    }
+
+    pub fn event_bus(&self) -> Option<&EventBus> {
+        self.event_bus.as_ref()
+    }
+
+    pub async fn process_internal_events(&mut self) -> Result<()> {
+        // Collect events first to avoid borrowing issues
+        let mut events = Vec::new();
+        if let Some(rx) = &mut self.internal_event_rx {
+            // Use try_recv to avoid blocking
+            while let Ok(event) = rx.try_recv() {
+                events.push(event);
+            }
+        }
+
+        // Now process them
+        for event in events {
+            self.handle_internal_event(event).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn handle_internal_event(&mut self, event: UnifiedEvent) -> Result<()> {
+        use uuid::Uuid;
+
+        match event {
+            UnifiedEvent::KeyPress(key) => {
+                // For now, just log that we received it
+                log::debug!("Event bus received key: {key:?}");
+                // Actual processing still happens in main.rs
+            }
+            UnifiedEvent::Command(cmd) if cmd.starts_with("/profile") || cmd.starts_with("/p ") => {
+                let parts: Vec<&str> = cmd.split_whitespace().collect();
+                if let Some(npub_str) = parts.get(1) {
+                    if let Ok(pubkey) = PublicKey::from_bech32(npub_str) {
+                        // Emit fetch request
+                        if let Some(event_bus) = &self.event_bus {
+                            let _ = event_bus.emit(UnifiedEvent::NostrFetch {
+                                filter: Filter::new().kind(Kind::Metadata).author(pubkey).limit(1),
+                                request_id: Uuid::new_v4(),
+                            });
+                        }
+                    }
+                }
+            }
+            UnifiedEvent::NostrFetch { filter, request_id } => {
+                // Do the actual fetch
+                let events = self
+                    .client
+                    .fetch_events(filter, Duration::from_secs(5))
+                    .await?;
+                if let Some(event_bus) = &self.event_bus {
+                    let _ = event_bus.emit(UnifiedEvent::NostrEventFetchComplete {
+                        request_id,
+                        events: events.into_iter().collect(),
+                    });
+                }
+            }
+            UnifiedEvent::NostrEventFetchComplete { events, .. } => {
+                // Process the profile
+                if let Some(event) = events.first() {
+                    if event.kind == Kind::Metadata {
+                        if let Ok(metadata) = Metadata::from_json(&event.content) {
+                            self.profiles.insert(event.pubkey, metadata);
+                            self.flash_message = Some("Profile fetched via event bus".to_string());
+                        }
+                    }
+                }
+            }
+            // Will be filled in gradually as we migrate commands
+            _ => {
+                log::debug!("Unhandled internal event: {event:?}");
+            }
+        }
+        Ok(())
     }
 
     pub async fn publish_key_package(&mut self) -> Result<()> {
@@ -752,6 +842,34 @@ impl Nrc {
         // Handle quit
         if input == "/quit" || input == "/q" {
             return Ok(true); // Signal to quit
+        }
+
+        // Handle profile fetch command
+        if input.starts_with("/profile ") || input.starts_with("/p ") {
+            let parts: Vec<&str> = input.split_whitespace().collect();
+            let npub = parts.get(1).map(|s| s.to_string());
+
+            if let Some(event_bus) = &self.event_bus {
+                if let Err(e) = event_bus.emit(UnifiedEvent::Command(input.clone())) {
+                    log::debug!("Failed to emit command event: {e}");
+                } else {
+                    // Return early - event bus will handle it
+                    return Ok(false);
+                }
+            }
+
+            // Fallback to direct handling if event bus fails
+            if let Some(npub_str) = npub {
+                if let Ok(pubkey) = PublicKey::from_bech32(&npub_str) {
+                    self.fetch_profile(&pubkey).await?;
+                    self.flash_message = Some("Profile fetched".to_string());
+                } else {
+                    self.last_error = Some("Invalid npub format".to_string());
+                }
+            } else {
+                self.last_error = Some("Usage: /profile <npub>".to_string());
+            }
+            return Ok(false);
         }
 
         // Handle npub copy
