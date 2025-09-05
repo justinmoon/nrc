@@ -301,7 +301,16 @@ impl Nrc {
             with_storage_mut!(self, create_group(&self.keys.public_key(), vec![], config))?;
         let group_id = GroupId::from_slice(group_result.group.mls_group_id.as_slice());
 
-        self.groups.insert(group_id.clone(), group_result.group);
+        self.groups
+            .insert(group_id.clone(), group_result.group.clone());
+
+        // Subscribe to messages for this group
+        let h_tag_value = hex::encode(group_result.group.nostr_group_id);
+        let filter = Filter::new()
+            .kind(Kind::from(445u16))
+            .custom_tag(SingleLetterTag::lowercase(Alphabet::H), h_tag_value)
+            .limit(100);
+        self.client.subscribe(filter, None).await?;
 
         if let AppState::Ready {
             key_package_published,
@@ -339,6 +348,14 @@ impl Nrc {
 
         self.groups
             .insert(group_id.clone(), group_result.group.clone());
+
+        // Subscribe to messages for this group
+        let h_tag_value = hex::encode(group_result.group.nostr_group_id);
+        let filter = Filter::new()
+            .kind(Kind::from(445u16))
+            .custom_tag(SingleLetterTag::lowercase(Alphabet::H), h_tag_value)
+            .limit(100);
+        self.client.subscribe(filter, None).await?;
 
         if let Some(welcome_rumor) = group_result.welcome_rumors.first() {
             let recipient_pubkey = key_package.pubkey;
@@ -414,6 +431,14 @@ impl Nrc {
                     if let Ok(Some(group)) = with_storage!(self, get_group(&group_id)) {
                         self.groups.insert(group_id.clone(), group.clone());
 
+                        // Subscribe to messages for this group
+                        let h_tag_value = hex::encode(group.nostr_group_id);
+                        let filter = Filter::new()
+                            .kind(Kind::from(445u16))
+                            .custom_tag(SingleLetterTag::lowercase(Alphabet::H), h_tag_value)
+                            .limit(100);
+                        let _ = self.client.subscribe(filter, None).await;
+
                         // Fetch the profile of the person who invited us (first admin)
                         if let Some(admin) = group.admin_pubkeys.first() {
                             let _ = self.fetch_profile(admin).await;
@@ -441,11 +466,14 @@ impl Nrc {
     }
 
     pub async fn send_message(&mut self, group_id: GroupId, content: String) -> Result<()> {
-        let group_id = &group_id;
+        let group_id_clone = group_id.clone();
         let content = &content;
         let text_note_rumor = EventBuilder::text_note(content).build(self.keys.public_key());
 
-        let event = with_storage_mut!(self, create_message(group_id, text_note_rumor))?;
+        let event = with_storage_mut!(
+            self,
+            create_message(&group_id_clone, text_note_rumor.clone())
+        )?;
 
         // Note: merge_pending_commit is already called inside create_message
 
@@ -457,8 +485,16 @@ impl Nrc {
         );
         self.client.send_event(&event).await?;
 
-        // Don't store locally - we'll fetch it from the relay like other messages
-        // This avoids duplicates
+        // Add our own message to local history immediately
+        // Since we're sending to ourselves, it won't come back from the relay
+        // TODO: In the future, we could implement proper deduplication to handle
+        // cases where our own messages might be received from relays
+        let message = Message {
+            content: content.clone(),
+            sender: self.keys.public_key(),
+            timestamp: text_note_rumor.created_at,
+        };
+        self.add_message(group_id, message);
 
         Ok(())
     }
@@ -571,9 +607,18 @@ impl Nrc {
         let groups = with_storage!(self, get_groups())?;
         let group_ids: Vec<GroupId> = groups.iter().map(|g| g.mls_group_id.clone()).collect();
 
-        // Store groups in our HashMap for later use
+        // Store groups in our HashMap for later use and subscribe to messages
         for group in groups {
-            self.groups.insert(group.mls_group_id.clone(), group);
+            self.groups
+                .insert(group.mls_group_id.clone(), group.clone());
+
+            // Subscribe to messages for this group
+            let h_tag_value = hex::encode(group.nostr_group_id);
+            let filter = Filter::new()
+                .kind(Kind::from(445u16))
+                .custom_tag(SingleLetterTag::lowercase(Alphabet::H), h_tag_value)
+                .limit(100);
+            let _ = self.client.subscribe(filter, None).await;
         }
 
         self.state = AppState::Ready {
@@ -595,9 +640,18 @@ impl Nrc {
         let groups = with_storage!(self, get_groups())?;
         let group_ids: Vec<GroupId> = groups.iter().map(|g| g.mls_group_id.clone()).collect();
 
-        // Store groups in our HashMap for later use
+        // Store groups in our HashMap for later use and subscribe to messages
         for group in groups {
-            self.groups.insert(group.mls_group_id.clone(), group);
+            self.groups
+                .insert(group.mls_group_id.clone(), group.clone());
+
+            // Subscribe to messages for this group
+            let h_tag_value = hex::encode(group.nostr_group_id);
+            let filter = Filter::new()
+                .kind(Kind::from(445u16))
+                .custom_tag(SingleLetterTag::lowercase(Alphabet::H), h_tag_value)
+                .limit(100);
+            let _ = self.client.subscribe(filter, None).await;
         }
 
         self.state = AppState::Ready {
@@ -1067,6 +1121,17 @@ impl Nrc {
                             // Get the group info from storage after accepting
                             if let Ok(Some(group)) = with_storage!(self, get_group(&group_id)) {
                                 self.groups.insert(group_id.clone(), group.clone());
+
+                                // Subscribe to messages for this group
+                                let h_tag_value = hex::encode(group.nostr_group_id);
+                                let filter = Filter::new()
+                                    .kind(Kind::from(445u16))
+                                    .custom_tag(
+                                        SingleLetterTag::lowercase(Alphabet::H),
+                                        h_tag_value,
+                                    )
+                                    .limit(100);
+                                let _ = self.client.subscribe(filter, None).await;
 
                                 // Fetch the profile of the person who invited us
                                 if let Some(admin) = group.admin_pubkeys.first() {
