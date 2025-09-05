@@ -17,11 +17,33 @@ use std::path::PathBuf;
 use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration};
 
+fn default_data_dir() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        dirs::home_dir()
+            .expect("Failed to get home directory")
+            .join("Library")
+            .join("Application Support")
+            .join("nrc")
+    }
+    #[cfg(target_os = "linux")]
+    {
+        dirs::data_dir()
+            .unwrap_or_else(|| {
+                dirs::home_dir()
+                    .expect("Failed to get home directory")
+                    .join(".local")
+                    .join("share")
+            })
+            .join("nrc")
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// Data directory for logs and other files
-    #[arg(long, default_value = ".")]
+    #[arg(long, value_parser, default_value_os_t = default_data_dir())]
     datadir: PathBuf,
 
     /// Use memory storage instead of SQLite

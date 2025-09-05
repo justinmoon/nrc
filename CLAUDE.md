@@ -10,3 +10,4 @@
 - Don't hesitate to make github issues while you're working if you observe an issue that's outside the scope of our current change. This is very useful
 - When implementing features, always run `just ci` to verify the changes work before declaring victory. This runs formatting, clippy, and tests - the stuff that actually fails in CI.
 - When making database schema changes, always update plans/database.md to keep the schema documentation current. This doc has detailed explanations of every table and column.
+- This app targets macos and linux -- not windows
