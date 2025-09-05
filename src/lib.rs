@@ -170,7 +170,7 @@ impl Nrc {
             }
         }
     }
-    
+
     fn save_keys_to_keyring(keys: &Keys) -> Result<()> {
         use nostr_sdk::prelude::ToBech32;
         let nsec = keys.secret_key().to_bech32()?;
@@ -179,7 +179,7 @@ impl Nrc {
         log::info!("Saved nsec to keyring");
         Ok(())
     }
-    
+
     pub async fn new(datadir: &Path, use_memory: bool) -> Result<Self> {
         // Try to load existing keys from keyring
         let (keys, should_skip_onboarding) = match Self::load_keys_from_keyring() {
@@ -196,7 +196,7 @@ impl Nrc {
                 (Keys::generate(), false)
             }
         };
-        
+
         let client = Client::builder().signer(keys.clone()).build();
 
         // Add multiple relays for redundancy
@@ -234,7 +234,7 @@ impl Nrc {
                 mode: OnboardingMode::Choose,
             }
         };
-        
+
         let mut nrc = Self {
             storage,
             keys,
@@ -254,12 +254,12 @@ impl Nrc {
             event_tx: None,
             command_tx: None,
         };
-        
+
         // If we loaded existing keys, initialize immediately
         if should_skip_onboarding {
             nrc.initialize().await?;
         }
-        
+
         Ok(nrc)
     }
 
@@ -643,7 +643,7 @@ impl Nrc {
 
     pub async fn initialize_with_display_name(&mut self, display_name: String) -> Result<()> {
         self.state = AppState::Initializing;
-        
+
         // Save the generated keys to keyring
         if let Err(e) = Self::save_keys_to_keyring(&self.keys) {
             log::warn!("Failed to save keys to keyring: {e}");
@@ -692,7 +692,7 @@ impl Nrc {
         let keys = Keys::parse(&nsec)?;
         self.keys = keys;
         self.client = Client::builder().signer(self.keys.clone()).build();
-        
+
         // Save the imported keys to keyring
         if let Err(e) = Self::save_keys_to_keyring(&self.keys) {
             log::warn!("Failed to save keys to keyring: {e}");
