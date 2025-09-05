@@ -17,12 +17,15 @@ pub struct TestClient {
 #[allow(dead_code)] // Methods are used across different test files
 impl TestClient {
     pub async fn new(name: &str) -> Result<Self> {
-        // Create a unique temp directory for this client
-        let temp_dir = std::env::temp_dir().join(format!("nrc_test_{name}"));
+        // Create a unique temp directory for this client with random suffix
+        let temp_dir =
+            std::env::temp_dir().join(format!("nrc_test_{}_{}", name, rand::random::<u32>()));
+        // Clean up if it exists and create fresh directory
+        let _ = std::fs::remove_dir_all(&temp_dir);
         std::fs::create_dir_all(&temp_dir)?;
 
-        // Create Nrc instance with memory storage
-        let mut nrc = Nrc::new(&temp_dir, true).await?;
+        // Create Nrc instance
+        let mut nrc = Nrc::new(&temp_dir).await?;
 
         // Log relay configuration for debugging
         #[cfg(test)]

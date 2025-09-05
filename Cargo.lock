@@ -1848,19 +1848,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nostr-mls-memory-storage"
-version = "0.43.0"
-source = "git+https://github.com/rust-nostr/nostr?branch=master#1c66cfdc883e79ecc36e12c50bfce9e286f8c951"
-dependencies = [
- "lru 0.16.0",
- "nostr",
- "nostr-mls-storage",
- "openmls",
- "openmls_memory_storage",
- "parking_lot",
-]
-
-[[package]]
 name = "nostr-mls-sqlite-storage"
 version = "0.43.0"
 source = "git+https://github.com/rust-nostr/nostr?branch=master#1c66cfdc883e79ecc36e12c50bfce9e286f8c951"
@@ -1931,7 +1918,6 @@ dependencies = [
  "hex",
  "log",
  "nostr-mls",
- "nostr-mls-memory-storage",
  "nostr-mls-sqlite-storage",
  "nostr-mls-storage",
  "nostr-sdk",

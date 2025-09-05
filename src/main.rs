@@ -45,10 +45,6 @@ struct Args {
     /// Data directory for logs and other files
     #[arg(long, value_parser, default_value_os_t = default_data_dir())]
     datadir: PathBuf,
-
-    /// Use memory storage instead of SQLite
-    #[arg(long)]
-    memory: bool,
 }
 
 fn setup_logging(datadir: &PathBuf) -> Result<()> {
@@ -94,13 +90,9 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     setup_logging(&args.datadir)?;
-    log::info!(
-        "Starting NRC with datadir: {:?}, memory: {}",
-        args.datadir,
-        args.memory
-    );
+    log::info!("Starting NRC with datadir: {:?}", args.datadir);
 
-    let mut nrc = Nrc::new(&args.datadir, args.memory).await?;
+    let mut nrc = Nrc::new(&args.datadir).await?;
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();

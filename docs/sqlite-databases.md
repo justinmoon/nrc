@@ -2,7 +2,7 @@
 
 ## Overview
 
-NRC uses **exactly one SQLite database** when running in persistent storage mode (95% confidence). The application provides a choice between memory storage and SQLite storage, controlled by the `--memory` flag.
+NRC uses **exactly one SQLite database** for all persistent storage (100% confidence). The application always uses SQLite storage for simplicity.
 
 ## Database Configuration
 
@@ -11,21 +11,14 @@ NRC uses **exactly one SQLite database** when running in persistent storage mode
 - **Default datadir**: Current directory (`.`)
 - **Command-line control**: `--datadir <path>` flag
 
-### Storage Mode Selection
+### Database Initialization
 ```rust
-// From src/lib.rs:152-163
-let storage = if use_memory {
-    log::info!("Using in-memory storage");
-    Storage::Memory(Box::new(NostrMls::new(NostrMlsMemoryStorage::default())))
-} else {
-    // Create datadir if it doesn't exist
-    std::fs::create_dir_all(datadir)?;
-    let db_path = datadir.join("nrc.db");
-    log::info!("Using SQLite storage at: {db_path:?}");
-    Storage::Sqlite(Box::new(NostrMls::new(NostrMlsSqliteStorage::new(
-        db_path,
-    )?)))
-};
+// From src/lib.rs
+// Create datadir if it doesn't exist
+std::fs::create_dir_all(datadir)?;
+let db_path = datadir.join("nrc.db");
+log::info!("Using SQLite storage at: {db_path:?}");
+let storage = Box::new(NostrMls::new(NostrMlsSqliteStorage::new(db_path)?));
 ```
 
 ## Database Purpose
@@ -38,25 +31,19 @@ The single SQLite database (`nrc.db`) stores all MLS (Messaging Layer Security) 
 4. **Welcome Messages**: Group invitation data
 5. **Protocol State**: MLS-specific state management
 
-## Storage Abstraction
+## Storage Architecture
 
-NRC implements a clever storage abstraction pattern using Rust enums and macros:
+NRC uses a direct storage approach with SQLite:
 
-### Storage Enum
+### Storage Type
 ```rust
-pub enum Storage {
-    Memory(Box<NostrMls<NostrMlsMemoryStorage>>),
-    Sqlite(Box<NostrMls<NostrMlsSqliteStorage>>),
+pub struct Nrc {
+    storage: Box<NostrMls<NostrMlsSqliteStorage>>,
+    // ... other fields
 }
 ```
 
-### Unified Interface via Macros
-The application uses two macros to provide a unified interface regardless of storage backend:
-
-- `with_storage!`: For immutable operations
-- `with_storage_mut!`: For mutable operations
-
-This allows the same code to work with both in-memory and SQLite storage without conditional logic at every storage access point (100% confidence).
+All storage operations directly use the SQLite backend through the `NostrMlsSqliteStorage` implementation.
 
 ## Additional Database References
 
@@ -83,9 +70,9 @@ This provides SQLite-backed storage specifically designed for MLS protocol opera
 ## Usage Patterns
 
 ### Initialization
-1. Parse command-line arguments to determine datadir and storage mode
-2. Create datadir if it doesn't exist (SQLite mode only)
-3. Initialize either memory or SQLite storage
+1. Parse command-line arguments to determine datadir
+2. Create datadir if it doesn't exist
+3. Initialize SQLite storage
 4. Pass storage to NostrMls instance
 
 ### Runtime Operations
@@ -104,4 +91,4 @@ All database operations go through the `NostrMls` abstraction layer, which handl
 
 **Total SQLite Databases: 1** (100% confidence)
 
-The NRC application uses a single SQLite database file (`nrc.db`) for all persistent storage needs related to the MLS protocol. This centralized approach simplifies data management and ensures all cryptographic material and message history are stored in one secure location. The storage abstraction layer allows for easy switching between memory and persistent storage modes without changing application logic.
+The NRC application uses a single SQLite database file (`nrc.db`) for all persistent storage needs related to the MLS protocol. This centralized approach simplifies data management and ensures all cryptographic material and message history are stored in one secure location.
