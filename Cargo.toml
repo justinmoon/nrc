@@ -2,6 +2,10 @@
 name = "nrc"
 version = "0.1.0"
 edition = "2021"
+description = "Nostr Relay Chat - A terminal-based chat client using the Nostr protocol with MLS encryption"
+license = "MIT"
+repository = "https://github.com/justinmoon/nrc"
+authors = ["Justin Moon"]
 
 [dependencies]
 nostr-mls = { git = "https://github.com/rust-nostr/nostr", branch = "master" }
