@@ -153,6 +153,9 @@ async fn run_app<B: ratatui::backend::Backend>(
         // Draw UI
         terminal.draw(|f| tui::draw(f, nrc))?;
 
+        // Process internal events from the event bus on every cycle
+        nrc.process_internal_events().await?;
+
         // Process events with small timeout for refresh rate
         match timeout(Duration::from_millis(50), event_rx.recv()).await {
             Ok(Some(event)) => {

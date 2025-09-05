@@ -258,6 +258,176 @@ impl Nrc {
                     }
                 }
             }
+            UnifiedEvent::Quit => {
+                // Log the quit event
+                log::debug!("Event bus received quit command");
+                // The actual quitting logic is handled in process_command return value
+            }
+            UnifiedEvent::ShowHelp => {
+                log::debug!("Event bus received show help command");
+                self.show_help = true;
+                self.help_explicitly_requested = true;
+            }
+            UnifiedEvent::NextGroup => {
+                log::debug!("Event bus received next group command");
+                self.next_group();
+            }
+            UnifiedEvent::PrevGroup => {
+                log::debug!("Event bus received prev group command");
+                self.prev_group();
+            }
+            UnifiedEvent::CopyNpub => {
+                log::debug!("Event bus received copy npub command");
+                use clipboard::ClipboardContext;
+                use clipboard::ClipboardProvider;
+                use nostr_sdk::prelude::ToBech32;
+
+                let npub = self
+                    .keys
+                    .public_key()
+                    .to_bech32()
+                    .unwrap_or_else(|_| "error".to_string());
+
+                match ClipboardContext::new() {
+                    Ok(mut ctx) => {
+                        if let Err(e) = ctx.set_contents(npub.clone()) {
+                            self.last_error = Some(format!("Failed to copy: {e}"));
+                        } else {
+                            self.flash_message =
+                                Some(format!("Copied npub to clipboard via event bus: {npub}"));
+                        }
+                    }
+                    Err(e) => {
+                        self.last_error = Some(format!("Clipboard not available: {e}"));
+                    }
+                }
+            }
+            UnifiedEvent::JoinGroupCommand { npub } => {
+                log::debug!("Event bus received join group command for: {npub}");
+
+                // Parse the npub and validate it
+                match PublicKey::from_str(&npub) {
+                    Ok(pubkey) => {
+                        log::debug!("Successfully parsed npub to pubkey: {pubkey}");
+
+                        // Emit profile fetch request
+                        if let Some(event_bus) = &self.event_bus {
+                            log::debug!("Emitting profile fetch for: {pubkey}");
+                            let _ = event_bus.emit(UnifiedEvent::NostrFetch {
+                                filter: Filter::new().kind(Kind::Metadata).author(pubkey).limit(1),
+                                request_id: uuid::Uuid::new_v4(),
+                            });
+                        }
+
+                        // Check if already in group (simplified logic for now)
+                        let already_in_group =
+                            if let AppState::Ready { ref groups, .. } = self.state {
+                                groups.iter().any(|group_id| {
+                                    if let Some(group) = self.groups.get(group_id) {
+                                        group.admin_pubkeys.contains(&pubkey)
+                                    } else {
+                                        false
+                                    }
+                                })
+                            } else {
+                                false
+                            };
+
+                        log::debug!("Already in group with {npub}: {already_in_group}");
+
+                        if already_in_group {
+                            self.flash_message = Some(format!("Already in a group with {npub}"));
+                            return Ok(());
+                        }
+
+                        // Emit key package fetch request
+                        if let Some(event_bus) = &self.event_bus {
+                            log::debug!("Emitting fetch key package for: {pubkey}");
+                            let _ = event_bus.emit(UnifiedEvent::FetchKeyPackage {
+                                pubkey,
+                                request_id: uuid::Uuid::new_v4(),
+                            });
+                        } else {
+                            log::error!("Event bus is None when trying to emit FetchKeyPackage");
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Failed to parse npub '{npub}': {e}");
+                        self.last_error = Some(format!("Invalid public key: {e}"));
+                    }
+                }
+            }
+            UnifiedEvent::FetchKeyPackage { pubkey, request_id } => {
+                log::debug!("Event bus fetching key package for: {pubkey}");
+
+                match self.fetch_key_package(&pubkey).await {
+                    Ok(key_package) => {
+                        log::debug!("Key package fetched successfully, emitting KeyPackageFetched");
+                        if let Some(event_bus) = &self.event_bus {
+                            let _ = event_bus.emit(UnifiedEvent::KeyPackageFetched {
+                                pubkey,
+                                key_package,
+                                request_id,
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Failed to fetch key package: {e}");
+                        self.last_error = Some(format!("Failed to fetch key package: {e}"));
+                    }
+                }
+            }
+            UnifiedEvent::KeyPackageFetched {
+                pubkey,
+                key_package,
+                ..
+            } => {
+                log::debug!("Event bus received key package for: {pubkey}");
+
+                // Create group with the member
+                match self.create_group_with_member(key_package).await {
+                    Ok(group_id) => {
+                        // Send welcome
+                        match self.get_welcome_rumor_for(&pubkey) {
+                            Ok(welcome_rumor) => {
+                                if let Err(e) =
+                                    self.send_gift_wrapped_welcome(&pubkey, welcome_rumor).await
+                                {
+                                    log::error!("Failed to send welcome: {e}");
+                                }
+                            }
+                            Err(e) => {
+                                log::error!("Failed to get welcome rumor: {e}");
+                            }
+                        }
+
+                        // Update state
+                        if let AppState::Ready {
+                            key_package_published,
+                            groups,
+                        } = &self.state
+                        {
+                            let mut updated_groups = groups.clone();
+                            if !updated_groups.contains(&group_id) {
+                                updated_groups.push(group_id.clone());
+                            }
+                            self.state = AppState::Ready {
+                                key_package_published: *key_package_published,
+                                groups: updated_groups.clone(),
+                            };
+                            if let Some(idx) = updated_groups.iter().position(|g| g == &group_id) {
+                                self.selected_group_index = Some(idx);
+                            }
+                        }
+
+                        self.flash_message =
+                            Some("Group created and invitation sent via event bus!".to_string());
+                    }
+                    Err(e) => {
+                        self.last_error = Some(format!("Failed to create group: {e}"));
+                    }
+                }
+            }
             // Will be filled in gradually as we migrate commands
             _ => {
                 log::debug!("Unhandled internal event: {event:?}");
@@ -841,7 +1011,15 @@ impl Nrc {
 
         // Handle quit
         if input == "/quit" || input == "/q" {
-            return Ok(true); // Signal to quit
+            if let Some(event_bus) = &self.event_bus {
+                if let Err(e) = event_bus.emit(UnifiedEvent::Quit) {
+                    log::debug!("Failed to emit quit event: {e}");
+                } else {
+                    // Event bus will handle it, but we still need to return true to quit
+                    return Ok(true);
+                }
+            }
+            return Ok(true); // Fallback
         }
 
         // Handle profile fetch command
@@ -874,6 +1052,15 @@ impl Nrc {
 
         // Handle npub copy
         if input == "/npub" || input == "/n" {
+            if let Some(event_bus) = &self.event_bus {
+                if let Err(e) = event_bus.emit(UnifiedEvent::CopyNpub) {
+                    log::debug!("Failed to emit copy npub event: {e}");
+                } else {
+                    return Ok(false);
+                }
+            }
+
+            // Fallback to direct handling
             use clipboard::ClipboardContext;
             use clipboard::ClipboardProvider;
             use nostr_sdk::prelude::ToBech32;
@@ -901,6 +1088,16 @@ impl Nrc {
 
         // Handle help command
         if input == "/help" || input == "/h" {
+            if let Some(event_bus) = &self.event_bus {
+                if let Err(e) = event_bus.emit(UnifiedEvent::ShowHelp) {
+                    log::debug!("Failed to emit show help event: {e}");
+                } else {
+                    // Return early - event bus will handle it
+                    return Ok(false);
+                }
+            }
+
+            // Fallback to direct handling if event bus fails
             self.show_help = true;
             self.help_explicitly_requested = true;
             return Ok(false);
@@ -909,9 +1106,25 @@ impl Nrc {
         // Handle navigation commands in Ready state
         if matches!(self.state, AppState::Ready { .. }) {
             if input == "/next" {
+                if let Some(event_bus) = &self.event_bus {
+                    if let Err(e) = event_bus.emit(UnifiedEvent::NextGroup) {
+                        log::debug!("Failed to emit next group event: {e}");
+                    } else {
+                        return Ok(false);
+                    }
+                }
+                // Fallback
                 self.next_group();
                 return Ok(false);
             } else if input == "/prev" {
+                if let Some(event_bus) = &self.event_bus {
+                    if let Err(e) = event_bus.emit(UnifiedEvent::PrevGroup) {
+                        log::debug!("Failed to emit prev group event: {e}");
+                    } else {
+                        return Ok(false);
+                    }
+                }
+                // Fallback
                 self.prev_group();
                 return Ok(false);
             }
@@ -925,6 +1138,18 @@ impl Nrc {
             }
 
             let pubkey_str = parts[1];
+
+            // Try event bus first
+            if let Some(event_bus) = &self.event_bus {
+                if let Err(e) = event_bus.emit(UnifiedEvent::JoinGroupCommand {
+                    npub: pubkey_str.to_string(),
+                }) {
+                    log::debug!("Failed to emit join group command event: {e}");
+                } else {
+                    // Return early - event bus will handle it
+                    return Ok(false);
+                }
+            }
             let pubkey = match PublicKey::from_str(pubkey_str) {
                 Ok(pk) => pk,
                 Err(e) => {

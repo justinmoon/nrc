@@ -1,0 +1,30 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running unittests src/lib.rs (target/debug/deps/nrc-64a0f65006b66410)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/nrc-c182515139fdda5b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/event_loop_integration.rs (target/debug/deps/event_loop_integration-324055c9dce33009)
+
+running 1 test
+
+thread 'test_welcome_message_regression_and_chat' panicked at tests/event_loop_integration.rs:36:5:
+Bob doesn't have welcome rumor for Alice - this is the bug!
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test test_welcome_message_regression_and_chat ... FAILED
+
+failures:
+
+failures:
+    test_welcome_message_regression_and_chat
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 9.69s
+
+error: test failed, to rerun pass `--test event_loop_integration`

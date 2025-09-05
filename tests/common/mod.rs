@@ -101,6 +101,13 @@ impl TestClient {
         Ok(())
     }
 
+    /// Process internal events from the event bus
+    pub async fn process_internal_events(&self) -> Result<()> {
+        let mut nrc = self.nrc.lock().await;
+        nrc.process_internal_events().await?;
+        Ok(())
+    }
+
     /// Process events from the event queue (simulates event loop)
     pub async fn process_pending_events(&self) -> Result<()> {
         let mut event_rx = self.event_rx.lock().await;

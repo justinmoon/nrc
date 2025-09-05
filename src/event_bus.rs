@@ -41,12 +41,29 @@ pub enum UnifiedEvent {
         display_name: Option<String>,
         nsec: Option<String>,
     },
+    Quit,
+    ShowHelp,
+    CopyNpub,
+    NextGroup,
+    PrevGroup,
     CreateGroup {
         name: String,
         request_id: Uuid,
     },
     JoinGroup {
         npub: String,
+        request_id: Uuid,
+    },
+    JoinGroupCommand {
+        npub: String,
+    },
+    FetchKeyPackage {
+        pubkey: PublicKey,
+        request_id: Uuid,
+    },
+    KeyPackageFetched {
+        pubkey: PublicKey,
+        key_package: Event,
         request_id: Uuid,
     },
     SendMessage {
