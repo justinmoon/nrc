@@ -439,7 +439,9 @@ impl Nrc {
         let content = &content;
         let text_note_rumor = EventBuilder::text_note(content).build(self.keys.public_key());
 
-        let event = self.storage.create_message(&group_id_clone, text_note_rumor)?;
+        let event = self
+            .storage
+            .create_message(&group_id_clone, text_note_rumor.clone())?;
 
         // Note: merge_pending_commit is already called inside create_message
 
