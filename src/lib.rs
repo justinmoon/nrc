@@ -251,7 +251,7 @@ impl Nrc {
         let initial_state = if should_skip_onboarding {
             log::info!("Keys exist in keyring, will initialize after setup");
             // We'll initialize in the main loop after event channels are set up
-            AppState::Initializing  
+            AppState::Initializing
         } else {
             AppState::Onboarding {
                 input: String::new(),
