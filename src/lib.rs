@@ -198,19 +198,25 @@ impl Nrc {
     }
 
     pub async fn new(datadir: &Path, use_memory: bool) -> Result<Self> {
-        // Try to load existing keys from keyring
-        let (keys, should_skip_onboarding) = match Self::load_keys_from_keyring() {
-            Ok(Some(k)) => {
-                log::info!("Loaded existing keys from keyring");
-                (k, true)
-            }
-            Ok(None) => {
-                log::info!("No existing keys found, will generate new ones after onboarding");
-                (Keys::generate(), false)
-            }
-            Err(e) => {
-                log::warn!("Failed to access keyring: {e}, will generate new keys");
-                (Keys::generate(), false)
+        // Skip keyring when using memory storage (for tests)
+        let (keys, should_skip_onboarding) = if use_memory {
+            log::info!("Using memory storage, skipping keyring");
+            (Keys::generate(), false)
+        } else {
+            // Try to load existing keys from keyring
+            match Self::load_keys_from_keyring() {
+                Ok(Some(k)) => {
+                    log::info!("Loaded existing keys from keyring");
+                    (k, true)
+                }
+                Ok(None) => {
+                    log::info!("No existing keys found, will generate new ones after onboarding");
+                    (Keys::generate(), false)
+                }
+                Err(e) => {
+                    log::warn!("Failed to access keyring: {e}, will generate new keys");
+                    (Keys::generate(), false)
+                }
             }
         };
 
@@ -241,10 +247,11 @@ impl Nrc {
             )?)))
         };
 
-        // Check if we should skip onboarding
+        // Set initial state based on whether we have keys
         let initial_state = if should_skip_onboarding {
-            log::info!("Keys exist, skipping onboarding");
-            AppState::Initializing
+            log::info!("Keys exist in keyring, will initialize after setup");
+            // We'll initialize in the main loop after event channels are set up
+            AppState::Initializing  
         } else {
             AppState::Onboarding {
                 input: String::new(),
@@ -252,7 +259,7 @@ impl Nrc {
             }
         };
 
-        let mut nrc = Self {
+        Ok(Self {
             storage,
             keys,
             client,
@@ -270,14 +277,7 @@ impl Nrc {
             profiles: HashMap::new(),
             event_tx: None,
             command_tx: None,
-        };
-
-        // If we loaded existing keys, initialize immediately
-        if should_skip_onboarding {
-            nrc.initialize().await?;
-        }
-
-        Ok(nrc)
+        })
     }
 
     pub fn public_key(&self) -> PublicKey {
@@ -661,9 +661,11 @@ impl Nrc {
     pub async fn initialize_with_display_name(&mut self, display_name: String) -> Result<()> {
         self.state = AppState::Initializing;
 
-        // Save the generated keys to keyring
-        if let Err(e) = Self::save_keys_to_keyring(&self.keys) {
-            log::warn!("Failed to save keys to keyring: {e}");
+        // Save the generated keys to keyring (skip for memory storage/tests)
+        if !matches!(self.storage, Storage::Memory(_)) {
+            if let Err(e) = Self::save_keys_to_keyring(&self.keys) {
+                log::warn!("Failed to save keys to keyring: {e}");
+            }
         }
 
         // Publish profile with display name
@@ -710,9 +712,11 @@ impl Nrc {
         self.keys = keys;
         self.client = Client::builder().signer(self.keys.clone()).build();
 
-        // Save the imported keys to keyring
-        if let Err(e) = Self::save_keys_to_keyring(&self.keys) {
-            log::warn!("Failed to save keys to keyring: {e}");
+        // Save the imported keys to keyring (skip for memory storage/tests)
+        if !matches!(self.storage, Storage::Memory(_)) {
+            if let Err(e) = Self::save_keys_to_keyring(&self.keys) {
+                log::warn!("Failed to save keys to keyring: {e}");
+            }
         }
 
         for &relay in get_default_relays() {

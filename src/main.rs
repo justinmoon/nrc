@@ -134,6 +134,11 @@ async fn run_app<B: ratatui::backend::Backend>(
     // Note: We'll need to create network task differently since we can't clone storage
     // For now, we'll handle network commands directly in the main loop
 
+    // Initialize if we loaded keys from keyring
+    if matches!(nrc.state, AppState::Initializing) {
+        nrc.initialize().await?;
+    }
+
     // Main event loop - THE ONLY PLACE WHERE STATE CHANGES
     loop {
         // Draw UI
