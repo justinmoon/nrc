@@ -1,5 +1,6 @@
 use anyhow::Result;
 use crossterm::event::KeyEvent;
+use keyring::Entry;
 use nostr_mls::{groups::NostrGroupConfigData, messages::MessageProcessingResult, NostrMls};
 use nostr_mls_memory_storage::NostrMlsMemoryStorage;
 use nostr_mls_sqlite_storage::NostrMlsSqliteStorage;
@@ -152,8 +153,50 @@ pub struct Nrc {
 }
 
 impl Nrc {
+    fn load_keys_from_keyring() -> Result<Option<Keys>> {
+        let entry = Entry::new("nrc", "nsec")?;
+        match entry.get_password() {
+            Ok(nsec) => {
+                log::info!("Found existing nsec in keyring");
+                Ok(Some(Keys::parse(&nsec)?))
+            }
+            Err(keyring::Error::NoEntry) => {
+                log::info!("No nsec found in keyring");
+                Ok(None)
+            }
+            Err(e) => {
+                log::warn!("Keyring error: {e}");
+                Err(e.into())
+            }
+        }
+    }
+    
+    fn save_keys_to_keyring(keys: &Keys) -> Result<()> {
+        use nostr_sdk::prelude::ToBech32;
+        let nsec = keys.secret_key().to_bech32()?;
+        let entry = Entry::new("nrc", "nsec")?;
+        entry.set_password(&nsec)?;
+        log::info!("Saved nsec to keyring");
+        Ok(())
+    }
+    
     pub async fn new(datadir: &Path, use_memory: bool) -> Result<Self> {
-        let keys = Keys::generate();
+        // Try to load existing keys from keyring
+        let (keys, should_skip_onboarding) = match Self::load_keys_from_keyring() {
+            Ok(Some(k)) => {
+                log::info!("Loaded existing keys from keyring");
+                (k, true)
+            }
+            Ok(None) => {
+                log::info!("No existing keys found, will generate new ones after onboarding");
+                (Keys::generate(), false)
+            }
+            Err(e) => {
+                log::warn!("Failed to access keyring: {e}, will generate new keys");
+                (Keys::generate(), false)
+            }
+        };
+        
         let client = Client::builder().signer(keys.clone()).build();
 
         // Add multiple relays for redundancy
@@ -181,14 +224,22 @@ impl Nrc {
             )?)))
         };
 
-        Ok(Self {
+        // Check if we should skip onboarding
+        let initial_state = if should_skip_onboarding {
+            log::info!("Keys exist, skipping onboarding");
+            AppState::Initializing
+        } else {
+            AppState::Onboarding {
+                input: String::new(),
+                mode: OnboardingMode::Choose,
+            }
+        };
+        
+        let mut nrc = Self {
             storage,
             keys,
             client,
-            state: AppState::Onboarding {
-                input: String::new(),
-                mode: OnboardingMode::Choose,
-            },
+            state: initial_state,
             messages: HashMap::new(),
             welcome_rumors: HashMap::new(),
             groups: HashMap::new(),
@@ -202,7 +253,14 @@ impl Nrc {
             profiles: HashMap::new(),
             event_tx: None,
             command_tx: None,
-        })
+        };
+        
+        // If we loaded existing keys, initialize immediately
+        if should_skip_onboarding {
+            nrc.initialize().await?;
+        }
+        
+        Ok(nrc)
     }
 
     pub fn public_key(&self) -> PublicKey {
@@ -585,6 +643,11 @@ impl Nrc {
 
     pub async fn initialize_with_display_name(&mut self, display_name: String) -> Result<()> {
         self.state = AppState::Initializing;
+        
+        // Save the generated keys to keyring
+        if let Err(e) = Self::save_keys_to_keyring(&self.keys) {
+            log::warn!("Failed to save keys to keyring: {e}");
+        }
 
         // Publish profile with display name
         self.publish_profile(display_name).await?;
@@ -629,6 +692,11 @@ impl Nrc {
         let keys = Keys::parse(&nsec)?;
         self.keys = keys;
         self.client = Client::builder().signer(self.keys.clone()).build();
+        
+        // Save the imported keys to keyring
+        if let Err(e) = Self::save_keys_to_keyring(&self.keys) {
+            log::warn!("Failed to save keys to keyring: {e}");
+        }
 
         for &relay in get_default_relays() {
             if let Err(e) = self.client.add_relay(relay).await {
