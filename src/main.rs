@@ -242,10 +242,11 @@ async fn handle_key_press(
     _command_tx: &mpsc::Sender<NetworkCommand>,
 ) -> Result<bool> {
     // NEW: Send to event bus first (parallel processing for now)
-    if let Some(event_bus) = nrc.event_bus() {
-        if let Err(e) = event_bus.emit(nrc::event_bus::UnifiedEvent::KeyPress(key)) {
-            log::debug!("Failed to emit key press event: {e}");
-        }
+    if let Err(e) = nrc
+        .event_bus()
+        .emit(nrc::event_bus::UnifiedEvent::KeyPress(key))
+    {
+        log::debug!("Failed to emit key press event: {e}");
     }
 
     // Only allow Ctrl+C for emergency exit
@@ -257,7 +258,8 @@ async fn handle_key_press(
     match state_clone {
         AppState::Onboarding { input, mode } => {
             // Send all onboarding input to event bus instead of handling directly
-            if let Some(event_bus) = nrc.event_bus() {
+            let event_bus = nrc.event_bus();
+            {
                 match mode {
                     OnboardingMode::Choose => match key.code {
                         KeyCode::Char('1') => {
@@ -301,6 +303,7 @@ async fn handle_key_press(
             }
 
             // Fallback to old code if event bus fails
+            #[allow(unreachable_code)]
             match mode {
                 OnboardingMode::Choose => {
                     match key.code {

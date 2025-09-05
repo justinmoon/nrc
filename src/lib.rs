@@ -127,8 +127,8 @@ pub struct Nrc {
     pub event_tx: Option<mpsc::UnboundedSender<AppEvent>>,
     pub command_tx: Option<mpsc::Sender<NetworkCommand>>,
 
-    // New event bus fields
-    event_bus: Option<EventBus>,
+    // Event bus - now mandatory
+    event_bus: EventBus,
     internal_event_rx: Option<mpsc::UnboundedReceiver<UnifiedEvent>>,
 }
 
@@ -180,7 +180,7 @@ impl Nrc {
             profiles: HashMap::new(),
             event_tx: None,
             command_tx: None,
-            event_bus: Some(event_bus),
+            event_bus,
             internal_event_rx,
         })
     }
@@ -189,8 +189,8 @@ impl Nrc {
         self.keys.public_key()
     }
 
-    pub fn event_bus(&self) -> Option<&EventBus> {
-        self.event_bus.as_ref()
+    pub fn event_bus(&self) -> &EventBus {
+        &self.event_bus
     }
 
     pub async fn process_internal_events(&mut self) -> Result<()> {
@@ -221,43 +221,34 @@ impl Nrc {
                     match mode {
                         OnboardingMode::Choose => match key.code {
                             crossterm::event::KeyCode::Char('1') => {
-                                if let Some(event_bus) = &self.event_bus {
-                                    let _ = event_bus
-                                        .emit(UnifiedEvent::OnboardingChooseOption { option: 1 });
-                                }
+                                let _ = self
+                                    .event_bus
+                                    .emit(UnifiedEvent::OnboardingChooseOption { option: 1 });
                             }
                             crossterm::event::KeyCode::Char('2') => {
-                                if let Some(event_bus) = &self.event_bus {
-                                    let _ = event_bus
-                                        .emit(UnifiedEvent::OnboardingChooseOption { option: 2 });
-                                }
+                                let _ = self
+                                    .event_bus
+                                    .emit(UnifiedEvent::OnboardingChooseOption { option: 2 });
                             }
                             _ => {}
                         },
                         OnboardingMode::EnterDisplayName | OnboardingMode::ImportExisting => {
                             match key.code {
                                 crossterm::event::KeyCode::Char(c) => {
-                                    if let Some(event_bus) = &self.event_bus {
-                                        let _ =
-                                            event_bus.emit(UnifiedEvent::OnboardingInputChar { c });
-                                    }
+                                    let _ = self
+                                        .event_bus
+                                        .emit(UnifiedEvent::OnboardingInputChar { c });
                                 }
                                 crossterm::event::KeyCode::Backspace => {
-                                    if let Some(event_bus) = &self.event_bus {
-                                        let _ = event_bus.emit(UnifiedEvent::OnboardingBackspace);
-                                    }
+                                    let _ = self.event_bus.emit(UnifiedEvent::OnboardingBackspace);
                                 }
                                 crossterm::event::KeyCode::Enter if !input.is_empty() => {
-                                    if let Some(event_bus) = &self.event_bus {
-                                        let _ = event_bus.emit(UnifiedEvent::OnboardingSubmit {
-                                            input: input.clone(),
-                                        });
-                                    }
+                                    let _ = self.event_bus.emit(UnifiedEvent::OnboardingSubmit {
+                                        input: input.clone(),
+                                    });
                                 }
                                 crossterm::event::KeyCode::Esc => {
-                                    if let Some(event_bus) = &self.event_bus {
-                                        let _ = event_bus.emit(UnifiedEvent::OnboardingEscape);
-                                    }
+                                    let _ = self.event_bus.emit(UnifiedEvent::OnboardingEscape);
                                 }
                                 _ => {}
                             }
@@ -271,12 +262,10 @@ impl Nrc {
                 if let Some(npub_str) = parts.get(1) {
                     if let Ok(pubkey) = PublicKey::from_bech32(npub_str) {
                         // Emit fetch request
-                        if let Some(event_bus) = &self.event_bus {
-                            let _ = event_bus.emit(UnifiedEvent::NostrFetch {
-                                filter: Filter::new().kind(Kind::Metadata).author(pubkey).limit(1),
-                                request_id: Uuid::new_v4(),
-                            });
-                        }
+                        let _ = self.event_bus.emit(UnifiedEvent::NostrFetch {
+                            filter: Filter::new().kind(Kind::Metadata).author(pubkey).limit(1),
+                            request_id: Uuid::new_v4(),
+                        });
                     }
                 }
             }
@@ -286,12 +275,10 @@ impl Nrc {
                     .client
                     .fetch_events(filter, Duration::from_secs(5))
                     .await?;
-                if let Some(event_bus) = &self.event_bus {
-                    let _ = event_bus.emit(UnifiedEvent::NostrEventFetchComplete {
-                        request_id,
-                        events: events.into_iter().collect(),
-                    });
-                }
+                let _ = self.event_bus.emit(UnifiedEvent::NostrEventFetchComplete {
+                    request_id,
+                    events: events.into_iter().collect(),
+                });
             }
             UnifiedEvent::NostrEventFetchComplete { events, .. } => {
                 // Process the profile
@@ -357,13 +344,11 @@ impl Nrc {
                         log::debug!("Successfully parsed npub to pubkey: {pubkey}");
 
                         // Emit profile fetch request
-                        if let Some(event_bus) = &self.event_bus {
-                            log::debug!("Emitting profile fetch for: {pubkey}");
-                            let _ = event_bus.emit(UnifiedEvent::NostrFetch {
-                                filter: Filter::new().kind(Kind::Metadata).author(pubkey).limit(1),
-                                request_id: uuid::Uuid::new_v4(),
-                            });
-                        }
+                        log::debug!("Emitting profile fetch for: {pubkey}");
+                        let _ = self.event_bus.emit(UnifiedEvent::NostrFetch {
+                            filter: Filter::new().kind(Kind::Metadata).author(pubkey).limit(1),
+                            request_id: uuid::Uuid::new_v4(),
+                        });
 
                         // Check if already in group (simplified logic for now)
                         let already_in_group =
@@ -387,15 +372,11 @@ impl Nrc {
                         }
 
                         // Emit key package fetch request
-                        if let Some(event_bus) = &self.event_bus {
-                            log::debug!("Emitting fetch key package for: {pubkey}");
-                            let _ = event_bus.emit(UnifiedEvent::FetchKeyPackage {
-                                pubkey,
-                                request_id: uuid::Uuid::new_v4(),
-                            });
-                        } else {
-                            log::error!("Event bus is None when trying to emit FetchKeyPackage");
-                        }
+                        log::debug!("Emitting fetch key package for: {pubkey}");
+                        let _ = self.event_bus.emit(UnifiedEvent::FetchKeyPackage {
+                            pubkey,
+                            request_id: uuid::Uuid::new_v4(),
+                        });
                     }
                     Err(e) => {
                         log::error!("Failed to parse npub '{npub}': {e}");
@@ -409,13 +390,11 @@ impl Nrc {
                 match self.fetch_key_package(&pubkey).await {
                     Ok(key_package) => {
                         log::debug!("Key package fetched successfully, emitting KeyPackageFetched");
-                        if let Some(event_bus) = &self.event_bus {
-                            let _ = event_bus.emit(UnifiedEvent::KeyPackageFetched {
-                                pubkey,
-                                key_package,
-                                request_id,
-                            });
-                        }
+                        let _ = self.event_bus.emit(UnifiedEvent::KeyPackageFetched {
+                            pubkey,
+                            key_package,
+                            request_id,
+                        });
                     }
                     Err(e) => {
                         log::error!("Failed to fetch key package: {e}");
@@ -514,23 +493,19 @@ impl Nrc {
                         OnboardingMode::EnterDisplayName => {
                             if !input.is_empty() {
                                 // Emit initialization event instead of calling directly
-                                if let Some(event_bus) = &self.event_bus {
-                                    let _ = event_bus.emit(UnifiedEvent::InitializeApp {
-                                        display_name: Some(input),
-                                        nsec: None,
-                                    });
-                                }
+                                let _ = self.event_bus.emit(UnifiedEvent::InitializeApp {
+                                    display_name: Some(input),
+                                    nsec: None,
+                                });
                             }
                         }
                         OnboardingMode::ImportExisting => {
                             if !input.is_empty() {
                                 // Emit initialization event instead of calling directly
-                                if let Some(event_bus) = &self.event_bus {
-                                    let _ = event_bus.emit(UnifiedEvent::InitializeApp {
-                                        display_name: None,
-                                        nsec: Some(input),
-                                    });
-                                }
+                                let _ = self.event_bus.emit(UnifiedEvent::InitializeApp {
+                                    display_name: None,
+                                    nsec: Some(input),
+                                });
                             }
                         }
                         _ => {}
@@ -1152,13 +1127,11 @@ impl Nrc {
 
         // Handle quit
         if input == "/quit" || input == "/q" {
-            if let Some(event_bus) = &self.event_bus {
-                if let Err(e) = event_bus.emit(UnifiedEvent::Quit) {
-                    log::debug!("Failed to emit quit event: {e}");
-                } else {
-                    // Event bus will handle it, but we still need to return true to quit
-                    return Ok(true);
-                }
+            if let Err(e) = self.event_bus.emit(UnifiedEvent::Quit) {
+                log::debug!("Failed to emit quit event: {e}");
+            } else {
+                // Event bus will handle it, but we still need to return true to quit
+                return Ok(true);
             }
             return Ok(true); // Fallback
         }
@@ -1168,13 +1141,11 @@ impl Nrc {
             let parts: Vec<&str> = input.split_whitespace().collect();
             let npub = parts.get(1).map(|s| s.to_string());
 
-            if let Some(event_bus) = &self.event_bus {
-                if let Err(e) = event_bus.emit(UnifiedEvent::Command(input.clone())) {
-                    log::debug!("Failed to emit command event: {e}");
-                } else {
-                    // Return early - event bus will handle it
-                    return Ok(false);
-                }
+            if let Err(e) = self.event_bus.emit(UnifiedEvent::Command(input.clone())) {
+                log::debug!("Failed to emit command event: {e}");
+            } else {
+                // Return early - event bus will handle it
+                return Ok(false);
             }
 
             // Fallback to direct handling if event bus fails
@@ -1193,12 +1164,10 @@ impl Nrc {
 
         // Handle npub copy
         if input == "/npub" || input == "/n" {
-            if let Some(event_bus) = &self.event_bus {
-                if let Err(e) = event_bus.emit(UnifiedEvent::CopyNpub) {
-                    log::debug!("Failed to emit copy npub event: {e}");
-                } else {
-                    return Ok(false);
-                }
+            if let Err(e) = self.event_bus.emit(UnifiedEvent::CopyNpub) {
+                log::debug!("Failed to emit copy npub event: {e}");
+            } else {
+                return Ok(false);
             }
 
             // Fallback to direct handling
@@ -1229,13 +1198,11 @@ impl Nrc {
 
         // Handle help command
         if input == "/help" || input == "/h" {
-            if let Some(event_bus) = &self.event_bus {
-                if let Err(e) = event_bus.emit(UnifiedEvent::ShowHelp) {
-                    log::debug!("Failed to emit show help event: {e}");
-                } else {
-                    // Return early - event bus will handle it
-                    return Ok(false);
-                }
+            if let Err(e) = self.event_bus.emit(UnifiedEvent::ShowHelp) {
+                log::debug!("Failed to emit show help event: {e}");
+            } else {
+                // Return early - event bus will handle it
+                return Ok(false);
             }
 
             // Fallback to direct handling if event bus fails
@@ -1247,23 +1214,19 @@ impl Nrc {
         // Handle navigation commands in Ready state
         if matches!(self.state, AppState::Ready { .. }) {
             if input == "/next" {
-                if let Some(event_bus) = &self.event_bus {
-                    if let Err(e) = event_bus.emit(UnifiedEvent::NextGroup) {
-                        log::debug!("Failed to emit next group event: {e}");
-                    } else {
-                        return Ok(false);
-                    }
+                if let Err(e) = self.event_bus.emit(UnifiedEvent::NextGroup) {
+                    log::debug!("Failed to emit next group event: {e}");
+                } else {
+                    return Ok(false);
                 }
                 // Fallback
                 self.next_group();
                 return Ok(false);
             } else if input == "/prev" {
-                if let Some(event_bus) = &self.event_bus {
-                    if let Err(e) = event_bus.emit(UnifiedEvent::PrevGroup) {
-                        log::debug!("Failed to emit prev group event: {e}");
-                    } else {
-                        return Ok(false);
-                    }
+                if let Err(e) = self.event_bus.emit(UnifiedEvent::PrevGroup) {
+                    log::debug!("Failed to emit prev group event: {e}");
+                } else {
+                    return Ok(false);
                 }
                 // Fallback
                 self.prev_group();
@@ -1281,15 +1244,13 @@ impl Nrc {
             let pubkey_str = parts[1];
 
             // Try event bus first
-            if let Some(event_bus) = &self.event_bus {
-                if let Err(e) = event_bus.emit(UnifiedEvent::JoinGroupCommand {
-                    npub: pubkey_str.to_string(),
-                }) {
-                    log::debug!("Failed to emit join group command event: {e}");
-                } else {
-                    // Return early - event bus will handle it
-                    return Ok(false);
-                }
+            if let Err(e) = self.event_bus.emit(UnifiedEvent::JoinGroupCommand {
+                npub: pubkey_str.to_string(),
+            }) {
+                log::debug!("Failed to emit join group command event: {e}");
+            } else {
+                // Return early - event bus will handle it
+                return Ok(false);
             }
             let pubkey = match PublicKey::from_str(pubkey_str) {
                 Ok(pk) => pk,

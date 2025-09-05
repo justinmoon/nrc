@@ -175,12 +175,12 @@ impl TestClientUninitialized {
     }
 
     pub async fn emit_key_event(&self, key: KeyEvent) -> Result<()> {
-        // First emit through event bus if available
+        // First emit through event bus
         {
             let nrc = self.nrc.lock().await;
-            if let Some(event_bus) = nrc.event_bus() {
-                let _ = event_bus.emit(nrc::event_bus::UnifiedEvent::KeyPress(key));
-            }
+            let _ = nrc
+                .event_bus()
+                .emit(nrc::event_bus::UnifiedEvent::KeyPress(key));
         }
 
         // Process internal events to handle the key press
