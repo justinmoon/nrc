@@ -237,8 +237,8 @@ impl Nrc {
 
     pub async fn new(datadir: &Path, use_memory: bool) -> Result<Self> {
         // Determine if we should use keyring (not in tests/CI)
-        let use_keyring = !use_memory 
-            && std::env::var("CI").is_err()  // Not in CI
+        let use_keyring = !use_memory
+            && std::env::var("CI").is_err() // Not in CI
             && std::env::var("DISABLE_KEYRING").is_err(); // Not explicitly disabled
 
         let (keys, should_skip_onboarding) = if !use_keyring {
