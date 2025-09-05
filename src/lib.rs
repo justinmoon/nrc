@@ -216,9 +216,55 @@ impl Nrc {
 
         match event {
             UnifiedEvent::KeyPress(key) => {
-                // For now, just log that we received it
-                log::debug!("Event bus received key: {key:?}");
-                // Actual processing still happens in main.rs
+                // Process key presses for onboarding states
+                if let AppState::Onboarding { input, mode } = &self.state {
+                    match mode {
+                        OnboardingMode::Choose => match key.code {
+                            crossterm::event::KeyCode::Char('1') => {
+                                if let Some(event_bus) = &self.event_bus {
+                                    let _ = event_bus
+                                        .emit(UnifiedEvent::OnboardingChooseOption { option: 1 });
+                                }
+                            }
+                            crossterm::event::KeyCode::Char('2') => {
+                                if let Some(event_bus) = &self.event_bus {
+                                    let _ = event_bus
+                                        .emit(UnifiedEvent::OnboardingChooseOption { option: 2 });
+                                }
+                            }
+                            _ => {}
+                        },
+                        OnboardingMode::EnterDisplayName | OnboardingMode::ImportExisting => {
+                            match key.code {
+                                crossterm::event::KeyCode::Char(c) => {
+                                    if let Some(event_bus) = &self.event_bus {
+                                        let _ =
+                                            event_bus.emit(UnifiedEvent::OnboardingInputChar { c });
+                                    }
+                                }
+                                crossterm::event::KeyCode::Backspace => {
+                                    if let Some(event_bus) = &self.event_bus {
+                                        let _ = event_bus.emit(UnifiedEvent::OnboardingBackspace);
+                                    }
+                                }
+                                crossterm::event::KeyCode::Enter if !input.is_empty() => {
+                                    if let Some(event_bus) = &self.event_bus {
+                                        let _ = event_bus.emit(UnifiedEvent::OnboardingSubmit {
+                                            input: input.clone(),
+                                        });
+                                    }
+                                }
+                                crossterm::event::KeyCode::Esc => {
+                                    if let Some(event_bus) = &self.event_bus {
+                                        let _ = event_bus.emit(UnifiedEvent::OnboardingEscape);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        _ => {}
+                    }
+                }
             }
             UnifiedEvent::Command(cmd) if cmd.starts_with("/profile") || cmd.starts_with("/p ") => {
                 let parts: Vec<&str> = cmd.split_whitespace().collect();
@@ -428,6 +474,101 @@ impl Nrc {
                     }
                 }
             }
+
+            // Onboarding Events
+            UnifiedEvent::OnboardingChooseOption { option } => {
+                if let AppState::Onboarding { .. } = self.state {
+                    match option {
+                        1 => {
+                            self.state = AppState::Onboarding {
+                                input: String::new(),
+                                mode: OnboardingMode::EnterDisplayName,
+                            };
+                        }
+                        2 => {
+                            self.state = AppState::Onboarding {
+                                input: String::new(),
+                                mode: OnboardingMode::ImportExisting,
+                            };
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            UnifiedEvent::OnboardingInputChar { c } => {
+                if let AppState::Onboarding { ref mut input, .. } = self.state {
+                    input.push(c);
+                }
+            }
+
+            UnifiedEvent::OnboardingBackspace => {
+                if let AppState::Onboarding { ref mut input, .. } = self.state {
+                    input.pop();
+                }
+            }
+
+            UnifiedEvent::OnboardingSubmit { input } => {
+                if let AppState::Onboarding { mode, .. } = &self.state {
+                    match mode {
+                        OnboardingMode::EnterDisplayName => {
+                            if !input.is_empty() {
+                                // Emit initialization event instead of calling directly
+                                if let Some(event_bus) = &self.event_bus {
+                                    let _ = event_bus.emit(UnifiedEvent::InitializeApp {
+                                        display_name: Some(input),
+                                        nsec: None,
+                                    });
+                                }
+                            }
+                        }
+                        OnboardingMode::ImportExisting => {
+                            if !input.is_empty() {
+                                // Emit initialization event instead of calling directly
+                                if let Some(event_bus) = &self.event_bus {
+                                    let _ = event_bus.emit(UnifiedEvent::InitializeApp {
+                                        display_name: None,
+                                        nsec: Some(input),
+                                    });
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            UnifiedEvent::OnboardingEscape => {
+                if let AppState::Onboarding { .. } = self.state {
+                    self.state = AppState::Onboarding {
+                        input: String::new(),
+                        mode: OnboardingMode::Choose,
+                    };
+                }
+            }
+
+            UnifiedEvent::InitializeApp { display_name, nsec } => {
+                self.state = AppState::Initializing;
+
+                if let Some(name) = display_name {
+                    if let Err(e) = self.initialize_with_display_name(name).await {
+                        log::error!("Failed to initialize with display name: {e}");
+                        self.state = AppState::Onboarding {
+                            input: String::new(),
+                            mode: OnboardingMode::Choose,
+                        };
+                    }
+                } else if let Some(nsec_str) = nsec {
+                    if let Err(e) = self.initialize_with_nsec(nsec_str).await {
+                        log::error!("Failed to initialize with nsec: {e}");
+                        self.state = AppState::Onboarding {
+                            input: String::new(),
+                            mode: OnboardingMode::Choose,
+                        };
+                    }
+                }
+            }
+
             // Will be filled in gradually as we migrate commands
             _ => {
                 log::debug!("Unhandled internal event: {event:?}");

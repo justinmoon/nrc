@@ -9,6 +9,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use nrc::event_bus::UnifiedEvent;
 use nrc::{AppEvent, AppState, NetworkCommand, Nrc, OnboardingMode};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::fs::{self, OpenOptions};
@@ -255,6 +256,51 @@ async fn handle_key_press(
     let state_clone = nrc.state.clone();
     match state_clone {
         AppState::Onboarding { input, mode } => {
+            // Send all onboarding input to event bus instead of handling directly
+            if let Some(event_bus) = nrc.event_bus() {
+                match mode {
+                    OnboardingMode::Choose => match key.code {
+                        KeyCode::Char('1') => {
+                            let _ =
+                                event_bus.emit(UnifiedEvent::OnboardingChooseOption { option: 1 });
+                        }
+                        KeyCode::Char('2') => {
+                            let _ =
+                                event_bus.emit(UnifiedEvent::OnboardingChooseOption { option: 2 });
+                        }
+                        KeyCode::Esc => return Ok(true),
+                        _ => {}
+                    },
+                    OnboardingMode::EnterDisplayName | OnboardingMode::ImportExisting => {
+                        match key.code {
+                            KeyCode::Char(c) => {
+                                let _ = event_bus.emit(UnifiedEvent::OnboardingInputChar { c });
+                            }
+                            KeyCode::Backspace => {
+                                let _ = event_bus.emit(UnifiedEvent::OnboardingBackspace);
+                            }
+                            KeyCode::Enter if !input.is_empty() => {
+                                let _ = event_bus.emit(UnifiedEvent::OnboardingSubmit {
+                                    input: input.clone(),
+                                });
+                            }
+                            KeyCode::Esc => {
+                                let _ = event_bus.emit(UnifiedEvent::OnboardingEscape);
+                            }
+                            _ => {}
+                        }
+                    }
+                    OnboardingMode::GenerateNew => {
+                        // This mode is no longer used since we generate immediately
+                        if key.code == KeyCode::Esc {
+                            let _ = event_bus.emit(UnifiedEvent::OnboardingEscape);
+                        }
+                    }
+                }
+                return Ok(false); // Event bus handled it
+            }
+
+            // Fallback to old code if event bus fails
             match mode {
                 OnboardingMode::Choose => {
                     match key.code {

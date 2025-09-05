@@ -18,14 +18,22 @@ async fn test_welcome_message_regression_and_chat() -> Result<()> {
     let bob = TestClient::new("bob").await?;
 
     // Wait for Alice's key package to be published
-    alice.wait_for_condition(
-        || async {
-            // Check if Alice is in Ready state with key package published
-            let alice_nrc = alice.nrc.lock().await;
-            matches!(alice_nrc.state, nrc::AppState::Ready { key_package_published: true, .. })
-        },
-        Duration::from_secs(5) // Longer timeout to account for relay propagation
-    ).await?;
+    alice
+        .wait_for_condition(
+            || async {
+                // Check if Alice is in Ready state with key package published
+                let alice_nrc = alice.nrc.lock().await;
+                matches!(
+                    alice_nrc.state,
+                    nrc::AppState::Ready {
+                        key_package_published: true,
+                        ..
+                    }
+                )
+            },
+            Duration::from_secs(5), // Longer timeout to account for relay propagation
+        )
+        .await?;
 
     let alice_npub = alice.npub().await?;
     let alice_pubkey = PublicKey::from_bech32(&alice_npub)?;
@@ -36,8 +44,9 @@ async fn test_welcome_message_regression_and_chat() -> Result<()> {
     // Wait for Bob to have a welcome rumor for Alice (with timeout)
     bob.wait_for_condition(
         || async { bob.has_welcome_rumor_for(&alice_pubkey).await },
-        Duration::from_secs(5)
-    ).await?;
+        Duration::from_secs(5),
+    )
+    .await?;
 
     // CRITICAL TEST: Bob should have a welcome rumor for Alice
     assert!(
@@ -49,15 +58,17 @@ async fn test_welcome_message_regression_and_chat() -> Result<()> {
     assert_eq!(bob.group_count().await, 1, "Bob should have 1 group");
 
     // Wait for Alice to receive and process the welcome
-    alice.wait_for_condition(
-        || async {
-            // Trigger fetch to check for welcomes
-            let _ = alice.trigger_fetch_welcomes().await;
-            alice.process_pending_events().await.ok();
-            alice.group_count().await >= 1
-        },
-        Duration::from_secs(8) // Give it more time since this involves network
-    ).await?;
+    alice
+        .wait_for_condition(
+            || async {
+                // Trigger fetch to check for welcomes
+                let _ = alice.trigger_fetch_welcomes().await;
+                alice.process_pending_events().await.ok();
+                alice.group_count().await >= 1
+            },
+            Duration::from_secs(8), // Give it more time since this involves network
+        )
+        .await?;
 
     // Now test actual messaging
     // Bob selects his first group and sends a message to Alice
@@ -66,29 +77,36 @@ async fn test_welcome_message_regression_and_chat() -> Result<()> {
     bob.execute_command("Hello Alice!").await?;
 
     // Wait for Alice to receive Bob's message
-    alice.wait_for_condition(
-        || async {
-            // Trigger fetch to check for messages
-            let _ = alice.trigger_fetch_messages().await;
-            alice.process_pending_events().await.ok();
-            
-            // Check if Alice has received the message
-            let alice_nrc = alice.nrc.lock().await;
-            let groups = alice_nrc.get_groups();
-            if groups.is_empty() { return false; }
-            
-            let messages = alice_nrc.get_messages(&groups[0]);
-            messages.iter().any(|m| m.content == "Hello Alice!")
-        },
-        Duration::from_secs(6) // Network operation timeout
-    ).await?;
+    alice
+        .wait_for_condition(
+            || async {
+                // Trigger fetch to check for messages
+                let _ = alice.trigger_fetch_messages().await;
+                alice.process_pending_events().await.ok();
+
+                // Check if Alice has received the message
+                let alice_nrc = alice.nrc.lock().await;
+                let groups = alice_nrc.get_groups();
+                if groups.is_empty() {
+                    return false;
+                }
+
+                let messages = alice_nrc.get_messages(&groups[0]);
+                messages.iter().any(|m| m.content == "Hello Alice!")
+            },
+            Duration::from_secs(6), // Network operation timeout
+        )
+        .await?;
 
     // Verify the message details
     {
         let alice_nrc = alice.nrc.lock().await;
         let groups = alice_nrc.get_groups();
         let messages = alice_nrc.get_messages(&groups[0]);
-        let hello_msg = messages.iter().find(|m| m.content == "Hello Alice!").unwrap();
+        let hello_msg = messages
+            .iter()
+            .find(|m| m.content == "Hello Alice!")
+            .unwrap();
 
         let bob_pubkey = bob.nrc.lock().await.public_key();
         assert_eq!(hello_msg.sender, bob_pubkey, "Message should be from Bob");
@@ -105,17 +123,20 @@ async fn test_welcome_message_regression_and_chat() -> Result<()> {
             // Trigger fetch to check for messages
             let _ = bob.trigger_fetch_messages().await;
             bob.process_pending_events().await.ok();
-            
+
             // Check if Bob has received Alice's reply
             let bob_nrc = bob.nrc.lock().await;
             let groups = bob_nrc.get_groups();
-            if groups.is_empty() { return false; }
-            
+            if groups.is_empty() {
+                return false;
+            }
+
             let messages = bob_nrc.get_messages(&groups[0]);
             messages.iter().any(|m| m.content == "Hi Bob!")
         },
-        Duration::from_secs(6) // Network operation timeout
-    ).await?;
+        Duration::from_secs(6), // Network operation timeout
+    )
+    .await?;
 
     // Verify Bob received Alice's message with correct sender
     {
@@ -176,13 +197,21 @@ async fn test_welcome_sent_over_network() -> Result<()> {
     let bob = TestClient::new("bob").await?;
 
     // Wait for Alice's key package to be published
-    alice.wait_for_condition(
-        || async {
-            let alice_nrc = alice.nrc.lock().await;
-            matches!(alice_nrc.state, nrc::AppState::Ready { key_package_published: true, .. })
-        },
-        Duration::from_secs(5) // Longer timeout to account for relay propagation
-    ).await?;
+    alice
+        .wait_for_condition(
+            || async {
+                let alice_nrc = alice.nrc.lock().await;
+                matches!(
+                    alice_nrc.state,
+                    nrc::AppState::Ready {
+                        key_package_published: true,
+                        ..
+                    }
+                )
+            },
+            Duration::from_secs(5), // Longer timeout to account for relay propagation
+        )
+        .await?;
 
     let alice_npub = alice.npub().await?;
 
@@ -195,8 +224,9 @@ async fn test_welcome_sent_over_network() -> Result<()> {
     // Wait for Bob to create a group (with timeout)
     bob.wait_for_condition(
         || async { bob.group_count().await >= 1 },
-        Duration::from_secs(3)
-    ).await?;
+        Duration::from_secs(3),
+    )
+    .await?;
 
     // Verify Bob created a group
     assert_eq!(

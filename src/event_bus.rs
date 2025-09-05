@@ -41,6 +41,20 @@ pub enum UnifiedEvent {
         display_name: Option<String>,
         nsec: Option<String>,
     },
+
+    // Onboarding Events
+    OnboardingChooseOption {
+        option: u8,
+    }, // 1=new, 2=import
+    OnboardingInputChar {
+        c: char,
+    },
+    OnboardingBackspace,
+    OnboardingSubmit {
+        input: String,
+    },
+    OnboardingEscape,
+    OnboardingComplete,
     Quit,
     ShowHelp,
     CopyNpub,
@@ -164,8 +178,10 @@ pub enum InputMode {
 
 #[derive(Debug, Clone)]
 pub enum OnboardingMode {
-    DisplayName,
-    Nsec,
+    Choose,
+    GenerateNew,
+    EnterDisplayName,
+    ImportExisting,
 }
 
 pub struct EventBus {

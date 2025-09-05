@@ -116,25 +116,25 @@ impl TestClient {
         Fut: std::future::Future<Output = bool>,
     {
         let start = tokio::time::Instant::now();
-        
+
         while !condition().await && start.elapsed() < timeout {
             // Process internal events from event bus
             self.process_internal_events().await?;
-            
+
             // Process regular events from queue
             self.process_pending_events().await?;
-            
+
             // Small delay between checks - faster in development
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        
+
         if !condition().await {
             return Err(anyhow::anyhow!(
-                "Condition not met within timeout of {:?}", 
+                "Condition not met within timeout of {:?}",
                 timeout
             ));
         }
-        
+
         Ok(())
     }
 
