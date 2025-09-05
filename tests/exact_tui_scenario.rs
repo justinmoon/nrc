@@ -20,7 +20,7 @@ async fn exact_tui_scenario_test() -> Result<()> {
 
     // === STEP 1: Create TOP client (like starting TUI) ===
     println!("\n=== CREATING TOP CLIENT ===");
-    let mut top = Nrc::new(&top_dir, false).await?;
+    let mut top = Nrc::new(&top_dir).await?;
 
     // User enters display name in TUI onboarding
     top.initialize_with_display_name("top".to_string()).await?;
@@ -34,7 +34,7 @@ async fn exact_tui_scenario_test() -> Result<()> {
 
     // === STEP 2: Create BOTTOM client (like starting second TUI) ===
     println!("\n=== CREATING BOTTOM CLIENT ===");
-    let mut bottom = Nrc::new(&bottom_dir, false).await?;
+    let mut bottom = Nrc::new(&bottom_dir).await?;
 
     // User enters display name in TUI onboarding
     bottom

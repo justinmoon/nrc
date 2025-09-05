@@ -1,6 +1,5 @@
 use anyhow::Result;
 use nostr_mls::{groups::NostrGroupConfigData, NostrMls};
-use nostr_mls_memory_storage::NostrMlsMemoryStorage;
 use nostr_mls_sqlite_storage::NostrMlsSqliteStorage;
 use nostr_sdk::prelude::*;
 use openmls::group::GroupId;
@@ -8,10 +7,10 @@ use std::collections::HashMap;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-use crate::{AppEvent, NetworkCommand, Message, Storage, with_storage, with_storage_mut, get_default_relays};
+use crate::{AppEvent, NetworkCommand, Message, get_default_relays};
 
 pub struct NetworkState {
-    pub storage: Storage,
+    pub storage: Box<NostrMls<NostrMlsSqliteStorage>>,
     pub keys: Keys,
     pub client: Client,
     pub groups: HashMap<GroupId, nostr_mls_storage::groups::types::Group>,
@@ -156,7 +155,7 @@ async fn publish_key_package(state: &mut NetworkState) -> Result<()> {
         .collect();
     let relays = relays?;
     
-    let (key_package_content, tags) = with_storage_mut!(state, create_key_package_for_event(&state.keys.public_key(), relays))?;
+    let (key_package_content, tags) = state.storage.create_key_package_for_event(&state.keys.public_key(), relays)?;
 
     let event = EventBuilder::new(Kind::from(443u16), key_package_content)
         .tags(tags)
@@ -202,11 +201,11 @@ async fn create_group(state: &mut NetworkState, name: String) -> Result<GroupId>
         vec![state.keys.public_key()],
     );
     
-    let group_result = with_storage_mut!(state, create_group(
+    let group_result = state.storage.create_group(
         &state.keys.public_key(),
         vec![],
         config
-    ))?;
+    )?;
     let group_id = GroupId::from_slice(group_result.group.mls_group_id.as_slice());
     
     state.groups.insert(group_id.clone(), group_result.group);
@@ -228,11 +227,11 @@ async fn join_group(state: &mut NetworkState, npub: String) -> Result<GroupId> {
         vec![state.keys.public_key()],
     );
 
-    let group_result = with_storage_mut!(state, create_group(
+    let group_result = state.storage.create_group(
         &state.keys.public_key(),
         vec![key_package.clone()],
         config
-    ))?;
+    )?;
 
     let group_id = GroupId::from_slice(group_result.group.mls_group_id.as_slice());
     state.groups.insert(group_id.clone(), group_result.group.clone());
@@ -247,11 +246,11 @@ async fn join_group(state: &mut NetworkState, npub: String) -> Result<GroupId> {
 }
 
 async fn send_message(state: &mut NetworkState, group_id: GroupId, content: String, event_tx: mpsc::UnboundedSender<AppEvent>) -> Result<()> {
-    let message = with_storage_mut!(state, create_message(
+    let message = state.storage.create_message(
         &state.keys.public_key(),
         group_id.as_slice().to_vec(),
         content.as_bytes().to_vec()
-    ))?;
+    )?;
     
     let rumor = EventBuilder::new(Kind::from(444u16), message.rumor.rumor_content.clone())
         .tags(message.rumor.rumor_tags.clone())
@@ -296,11 +295,11 @@ async fn fetch_and_process_messages(
                     continue;
                 }
 
-                match with_storage_mut!(state, process_message(
+                match state.storage.process_message(
                     &state.keys.public_key(),
                     unwrapped_gift.rumor.content.clone(),
                     unwrapped_gift.rumor.tags
-                )) {
+                ) {
                     Ok(msg) => {
                         if let Some(group_id) = msg.group_id {
                             let group_id = GroupId::from_slice(&group_id);
@@ -351,7 +350,7 @@ async fn fetch_and_process_welcomes(
                     continue;
                 }
 
-                if let Ok(result) = with_storage_mut!(state, process_welcome(
+                if let Ok(result) = state.storage.process_welcome(
                     &state.keys.public_key(),
                     unwrapped_gift.rumor.content.clone(),
                     unwrapped_gift.rumor.tags
