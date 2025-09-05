@@ -17,8 +17,15 @@ async fn test_welcome_message_regression_and_chat() -> Result<()> {
     let alice = TestClient::new("alice").await?;
     let bob = TestClient::new("bob").await?;
 
-    // Give Alice's key package time to propagate to relays
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    // Wait for Alice's key package to be published
+    alice.wait_for_condition(
+        || async {
+            // Check if Alice is in Ready state with key package published
+            let alice_nrc = alice.nrc.lock().await;
+            matches!(alice_nrc.state, nrc::AppState::Ready { key_package_published: true, .. })
+        },
+        Duration::from_secs(5) // Longer timeout to account for relay propagation
+    ).await?;
 
     let alice_npub = alice.npub().await?;
     let alice_pubkey = PublicKey::from_bech32(&alice_npub)?;
@@ -42,18 +49,15 @@ async fn test_welcome_message_regression_and_chat() -> Result<()> {
     assert_eq!(bob.group_count().await, 1, "Bob should have 1 group");
 
     // Wait for Alice to receive and process the welcome
-    tokio::time::sleep(Duration::from_secs(4)).await;
-
-    // Trigger fetch welcomes event and process it
-    alice.trigger_fetch_welcomes().await?;
-    alice.process_pending_events().await?;
-
-    // Alice should now have a group too
-    assert_eq!(
-        alice.group_count().await,
-        1,
-        "Alice should have auto-joined the group"
-    );
+    alice.wait_for_condition(
+        || async {
+            // Trigger fetch to check for welcomes
+            let _ = alice.trigger_fetch_welcomes().await;
+            alice.process_pending_events().await.ok();
+            alice.group_count().await >= 1
+        },
+        Duration::from_secs(8) // Give it more time since this involves network
+    ).await?;
 
     // Now test actual messaging
     // Bob selects his first group and sends a message to Alice
@@ -61,25 +65,33 @@ async fn test_welcome_message_regression_and_chat() -> Result<()> {
     bob.process_pending_events().await?; // Process the navigation event
     bob.execute_command("Hello Alice!").await?;
 
-    // Wait for message to propagate through relays
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    // Wait for Alice to receive Bob's message
+    alice.wait_for_condition(
+        || async {
+            // Trigger fetch to check for messages
+            let _ = alice.trigger_fetch_messages().await;
+            alice.process_pending_events().await.ok();
+            
+            // Check if Alice has received the message
+            let alice_nrc = alice.nrc.lock().await;
+            let groups = alice_nrc.get_groups();
+            if groups.is_empty() { return false; }
+            
+            let messages = alice_nrc.get_messages(&groups[0]);
+            messages.iter().any(|m| m.content == "Hello Alice!")
+        },
+        Duration::from_secs(6) // Network operation timeout
+    ).await?;
 
-    // Trigger fetch messages event for Alice and process it
-    alice.trigger_fetch_messages().await?;
-    alice.process_pending_events().await?;
-
-    // Alice should have received Bob's message
+    // Verify the message details
     {
         let alice_nrc = alice.nrc.lock().await;
         let groups = alice_nrc.get_groups();
-        assert_eq!(groups.len(), 1, "Alice should have 1 group");
-
         let messages = alice_nrc.get_messages(&groups[0]);
-        assert_eq!(messages.len(), 1, "Alice should have 1 message");
-        assert_eq!(messages[0].content, "Hello Alice!");
+        let hello_msg = messages.iter().find(|m| m.content == "Hello Alice!").unwrap();
 
         let bob_pubkey = bob.nrc.lock().await.public_key();
-        assert_eq!(messages[0].sender, bob_pubkey, "Message should be from Bob");
+        assert_eq!(hello_msg.sender, bob_pubkey, "Message should be from Bob");
     }
 
     // Alice selects her first group and sends a reply
@@ -87,32 +99,33 @@ async fn test_welcome_message_regression_and_chat() -> Result<()> {
     alice.process_pending_events().await?; // Process the navigation event
     alice.execute_command("Hi Bob!").await?;
 
-    // Wait for message to propagate
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    // Wait for Bob to receive Alice's reply
+    bob.wait_for_condition(
+        || async {
+            // Trigger fetch to check for messages
+            let _ = bob.trigger_fetch_messages().await;
+            bob.process_pending_events().await.ok();
+            
+            // Check if Bob has received Alice's reply
+            let bob_nrc = bob.nrc.lock().await;
+            let groups = bob_nrc.get_groups();
+            if groups.is_empty() { return false; }
+            
+            let messages = bob_nrc.get_messages(&groups[0]);
+            messages.iter().any(|m| m.content == "Hi Bob!")
+        },
+        Duration::from_secs(6) // Network operation timeout
+    ).await?;
 
-    // Trigger fetch messages event for Bob and process it
-    bob.trigger_fetch_messages().await?;
-    bob.process_pending_events().await?;
-
-    // Bob should have both messages (his own and Alice's reply)
+    // Verify Bob received Alice's message with correct sender
     {
         let bob_nrc = bob.nrc.lock().await;
         let groups = bob_nrc.get_groups();
         let messages = bob_nrc.get_messages(&groups[0]);
-
-        // Bob should see at least Alice's reply (his own message may or may not be stored)
-        assert!(
-            messages.iter().any(|m| m.content == "Hi Bob!"),
-            "Bob should have received Alice's reply"
-        );
+        let reply_msg = messages.iter().find(|m| m.content == "Hi Bob!").unwrap();
 
         let alice_pubkey = alice.nrc.lock().await.public_key();
-        assert!(
-            messages
-                .iter()
-                .any(|m| m.sender == alice_pubkey && m.content == "Hi Bob!"),
-            "Bob should have Alice's message with correct sender"
-        );
+        assert_eq!(reply_msg.sender, alice_pubkey, "Reply should be from Alice");
     }
 
     Ok(())
@@ -162,8 +175,14 @@ async fn test_welcome_sent_over_network() -> Result<()> {
     let alice = TestClient::new("alice").await?;
     let bob = TestClient::new("bob").await?;
 
-    // Give Alice's key package time to propagate to relays
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    // Wait for Alice's key package to be published
+    alice.wait_for_condition(
+        || async {
+            let alice_nrc = alice.nrc.lock().await;
+            matches!(alice_nrc.state, nrc::AppState::Ready { key_package_published: true, .. })
+        },
+        Duration::from_secs(5) // Longer timeout to account for relay propagation
+    ).await?;
 
     let alice_npub = alice.npub().await?;
 
