@@ -1,6 +1,6 @@
 [package]
 name = "nrc"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Nostr Relay Chat - A terminal-based chat client using the Nostr protocol with MLS encryption"
 license = "MIT"
@@ -8,10 +8,10 @@ repository = "https://github.com/justinmoon/nrc"
 authors = ["Justin Moon"]
 
 [dependencies]
-nostr-mls = { git = "https://github.com/rust-nostr/nostr", branch = "master" }
-nostr-mls-sqlite-storage = { git = "https://github.com/rust-nostr/nostr", branch = "master" }
-nostr-mls-storage = { git = "https://github.com/rust-nostr/nostr", branch = "master" }
-nostr-sdk = { git = "https://github.com/rust-nostr/nostr", branch = "master", features = ["nip59"] }
+nostr-mls = "0.0.0"
+nostr-mls-sqlite-storage = "0.0.0"
+nostr-mls-storage = "0.0.0"
+nostr-sdk = { version = "0.43", features = ["nip59"] }
 tokio = { version = "1", features = ["full"] }
 anyhow = "1.0"
 hex = "0.4"
