@@ -19,7 +19,7 @@ async fn test_multi_user_group_creation_and_chat() -> Result<()> {
     // Alice creates a multi-user group with Bob
     let bob_npub = bob.npub().await?;
     alice
-        .execute_command(&format!("/create #test-channel {bob_npub}"))
+        .execute_command(&format!("/group #test-channel {bob_npub}"))
         .await?;
 
     // Give it a moment to process
@@ -176,7 +176,7 @@ async fn test_multi_user_group_with_members_command() -> Result<()> {
     // Alice creates a group with Bob
     let bob_npub = bob.npub().await?;
     alice
-        .execute_command(&format!("/create #members-test {bob_npub}"))
+        .execute_command(&format!("/group #members-test {bob_npub}"))
         .await?;
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -255,7 +255,7 @@ async fn test_multi_user_group_leave_command() -> Result<()> {
     // Alice creates a group with Bob
     let bob_npub = bob.npub().await?;
     alice
-        .execute_command(&format!("/c #leave-test {bob_npub}"))
+        .execute_command(&format!("/g #leave-test {bob_npub}"))
         .await?; // Test short form of create
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -294,8 +294,8 @@ async fn test_group_name_display_differentiation() -> Result<()> {
 
     let alice_npub = alice.npub().await?;
 
-    // Bob creates a 2-person DM with Alice (using /j command)
-    bob.execute_command(&format!("/j {alice_npub}")).await?;
+    // Bob creates a 2-person DM with Alice (using /d command)
+    bob.execute_command(&format!("/d {alice_npub}")).await?;
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Bob should see Alice's name (not a channel name)
@@ -341,7 +341,7 @@ async fn test_group_name_display_differentiation() -> Result<()> {
     let bob_npub = bob.npub().await?;
     let charlie_npub = charlie.npub().await?;
     alice
-        .execute_command(&format!("/create #multi-test {bob_npub} {charlie_npub}"))
+        .execute_command(&format!("/group #multi-test {bob_npub} {charlie_npub}"))
         .await?;
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -429,7 +429,7 @@ async fn test_create_group_requires_key_package() -> Result<()> {
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     // Try to create group without members - should fail
-    alice.execute_command("/create #fail-test").await?;
+    alice.execute_command("/group #fail-test").await?;
 
     // Check for error
     {
@@ -452,7 +452,7 @@ async fn test_create_group_requires_key_package() -> Result<()> {
     // Try again with a member - should work
     let bob_npub = bob.npub().await?;
     alice
-        .execute_command(&format!("/create #success-test {bob_npub}"))
+        .execute_command(&format!("/group #success-test {bob_npub}"))
         .await?;
     tokio::time::sleep(Duration::from_millis(500)).await;
 

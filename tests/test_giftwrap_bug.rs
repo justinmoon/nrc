@@ -7,7 +7,7 @@ use std::time::Duration;
 #[tokio::test]
 async fn test_giftwrap_welcome_delivery() -> Result<()> {
     // This test catches the GiftWrap welcome delivery bug:
-    // When Bob runs `/j <alice_npub>`, Alice should receive the welcome message
+    // When Bob runs `/d <alice_npub>`, Alice should receive the welcome message
 
     // Create Alice and Bob using TestClient
     let alice = TestClient::new("alice").await?;
@@ -19,8 +19,8 @@ async fn test_giftwrap_welcome_delivery() -> Result<()> {
     // Wait for propagation
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    // Bob runs /j <alice_npub>
-    bob.execute_command(&format!("/j {alice_npub}")).await?;
+    // Bob runs /d <alice_npub>
+    bob.execute_command(&format!("/d {alice_npub}")).await?;
 
     // Wait for GiftWrap to propagate
     tokio::time::sleep(Duration::from_secs(5)).await;

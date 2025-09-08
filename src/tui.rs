@@ -604,14 +604,14 @@ fn draw_info_panel(f: &mut Frame, area: Rect, nrc: &Nrc) {
         Line::from(""),
         Line::from(vec![
             Span::styled(
-                "/create #name <npub1> [npub2]... (/c) ",
+                "/group #name <npub1> [npub2]... (/g) ",
                 Style::default().fg(Color::Green),
             ),
             Span::raw("Create group"),
         ]),
         Line::from(vec![
-            Span::styled("/join <npub> (/j) ", Style::default().fg(Color::Green)),
-            Span::raw("Start DM"),
+            Span::styled("/dm <npub> (/d) ", Style::default().fg(Color::Green)),
+            Span::raw("Start direct message"),
         ]),
         Line::from(vec![
             Span::styled("/invite <npub> (/i) ", Style::default().fg(Color::Yellow)),
@@ -671,14 +671,14 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
         Line::from(""),
         Line::from(vec![
             Span::styled(
-                "/create #name <npub1> [npub2]... ",
+                "/group #name <npub1> [npub2]... ",
                 Style::default().fg(Color::Green),
             ),
             Span::styled("(/c)", Style::default().fg(Color::DarkGray)),
             Span::raw(" - Create a multi-user group"),
         ]),
         Line::from(vec![
-            Span::styled("/join <npub> ", Style::default().fg(Color::Green)),
+            Span::styled("/dm <npub> ", Style::default().fg(Color::Green)),
             Span::styled("(/j)", Style::default().fg(Color::DarkGray)),
             Span::raw(" - Start a DM with someone"),
         ]),

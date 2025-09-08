@@ -25,7 +25,7 @@ async fn test_three_client_group_message_visibility() -> Result<()> {
     // Alice creates a group with Bob
     let bob_npub = bob.npub().await?;
     alice
-        .execute_command(&format!("/create #test {bob_npub}"))
+        .execute_command(&format!("/group #test {bob_npub}"))
         .await?;
 
     // Give it a moment to process
