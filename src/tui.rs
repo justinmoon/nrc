@@ -16,7 +16,7 @@ pub fn draw(f: &mut Frame, nrc: &Nrc) {
 
     match &nrc.state {
         AppState::Onboarding { input, mode } => {
-            draw_onboarding(f, chunks[0], input, mode);
+            draw_onboarding(f, chunks[0], input, mode, nrc.last_error.as_deref());
         }
         AppState::Initializing => {
             draw_initializing(f, chunks[0]);
@@ -27,7 +27,69 @@ pub fn draw(f: &mut Frame, nrc: &Nrc) {
     }
 }
 
-fn draw_onboarding(f: &mut Frame, area: Rect, input: &str, mode: &OnboardingMode) {
+/// Helper to draw password input field
+fn draw_password_input(
+    f: &mut Frame,
+    area: Rect,
+    prompt_lines: Vec<Line>,
+    input: &str,
+    help_text: Vec<Line>,
+) {
+    let prompt_len = prompt_lines.len();
+    let paragraph = Paragraph::new(prompt_lines)
+        .style(Style::default())
+        .alignment(Alignment::Center);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(prompt_len as u16 + 2),
+            Constraint::Length(3),
+            Constraint::Min(0),
+        ])
+        .split(area);
+
+    f.render_widget(paragraph, chunks[0]);
+
+    // Hide password input
+    let masked_input = "*".repeat(input.len());
+    let input_box = Paragraph::new(masked_input)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(Color::DarkGray)),
+        )
+        .style(Style::default().fg(Color::White));
+
+    let input_area = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(0)])
+        .split(chunks[1]);
+
+    // Center the password input box
+    let centered_input = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(35),
+            Constraint::Percentage(30),
+            Constraint::Percentage(35),
+        ])
+        .split(input_area[0]);
+
+    f.render_widget(input_box, centered_input[1]);
+
+    let help = Paragraph::new(help_text).alignment(Alignment::Center);
+    f.render_widget(help, chunks[2]);
+}
+
+fn draw_onboarding(
+    f: &mut Frame,
+    area: Rect,
+    input: &str,
+    mode: &OnboardingMode,
+    error: Option<&str>,
+) {
     let block = Block::default()
         .title("╔═══ NRC - ONBOARDING ═══╗")
         .borders(Borders::ALL)
@@ -198,6 +260,69 @@ fn draw_onboarding(f: &mut Frame, area: Rect, input: &str, mode: &OnboardingMode
 
             let help_text = Paragraph::new(help).alignment(Alignment::Center);
             f.render_widget(help_text, input_area[1]);
+        }
+        OnboardingMode::CreatePassword => {
+            let prompt_lines = vec![
+                Line::from(""),
+                Line::from(vec![Span::styled(
+                    "Create a password to encrypt your keys:",
+                    Style::default().fg(Color::Yellow),
+                )]),
+                Line::from(""),
+                Line::from(vec![Span::styled(
+                    "This password will be required each time you start NRC",
+                    Style::default().fg(Color::DarkGray),
+                )]),
+                Line::from(""),
+            ];
+
+            let help_text = vec![
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("[ENTER] ", Style::default().fg(Color::Green)),
+                    Span::raw("Continue"),
+                    Span::raw("  "),
+                    Span::styled("[ESC] ", Style::default().fg(Color::Red)),
+                    Span::raw("Back"),
+                ]),
+            ];
+
+            draw_password_input(f, chunks[1], prompt_lines, input, help_text);
+        }
+        OnboardingMode::EnterPassword => {
+            let mut prompt_lines = vec![
+                Line::from(""),
+                Line::from(vec![Span::styled(
+                    "Welcome back!",
+                    Style::default().fg(Color::Green),
+                )]),
+                Line::from(""),
+                Line::from(vec![Span::styled(
+                    "Enter your password to decrypt your keys:",
+                    Style::default().fg(Color::Yellow),
+                )]),
+            ];
+
+            // Show error if present
+            if let Some(err) = error {
+                prompt_lines.push(Line::from(""));
+                prompt_lines.push(Line::from(vec![Span::styled(
+                    err,
+                    Style::default().fg(Color::Red),
+                )]));
+            }
+
+            prompt_lines.push(Line::from(""));
+
+            let help_text = vec![
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("[ENTER] ", Style::default().fg(Color::Green)),
+                    Span::raw("Unlock"),
+                ]),
+            ];
+
+            draw_password_input(f, chunks[1], prompt_lines, input, help_text);
         }
     }
 }

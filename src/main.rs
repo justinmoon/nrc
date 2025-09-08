@@ -9,7 +9,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use nrc::{AppEvent, AppState, NetworkCommand, Nrc, OnboardingMode};
+use nrc::{AppEvent, AppState, NetworkCommand, Nrc, OnboardingData, OnboardingMode};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::fs::{self, OpenOptions};
 use std::io;
@@ -289,9 +289,13 @@ async fn handle_key_press(
                             };
                         }
                         KeyCode::Enter if !new_input.is_empty() => {
-                            // Initialize with the display name
-                            nrc.state = AppState::Initializing;
-                            nrc.initialize_with_display_name(new_input).await?;
+                            // Store display name for later use
+                            nrc.onboarding_data.display_name = Some(new_input);
+                            // Move to password creation
+                            nrc.state = AppState::Onboarding {
+                                input: String::new(),
+                                mode: OnboardingMode::CreatePassword,
+                            };
                         }
                         KeyCode::Esc => {
                             nrc.state = AppState::Onboarding {
@@ -320,14 +324,113 @@ async fn handle_key_press(
                             };
                         }
                         KeyCode::Enter if !new_input.is_empty() => {
-                            nrc.state = AppState::Initializing;
-                            nrc.initialize_with_nsec(new_input).await?;
+                            // Store nsec for later use
+                            nrc.onboarding_data.nsec = Some(new_input);
+                            // Move to password creation
+                            nrc.state = AppState::Onboarding {
+                                input: String::new(),
+                                mode: OnboardingMode::CreatePassword,
+                            };
                         }
                         KeyCode::Esc => {
                             nrc.state = AppState::Onboarding {
                                 input: String::new(),
                                 mode: OnboardingMode::Choose,
                             };
+                        }
+                        _ => {}
+                    }
+                }
+                OnboardingMode::CreatePassword => {
+                    let mut new_input = input.clone();
+                    match key.code {
+                        KeyCode::Char(c) => {
+                            new_input.push(c);
+                            nrc.state = AppState::Onboarding {
+                                input: new_input,
+                                mode,
+                            };
+                        }
+                        KeyCode::Backspace => {
+                            new_input.pop();
+                            nrc.state = AppState::Onboarding {
+                                input: new_input,
+                                mode,
+                            };
+                        }
+                        KeyCode::Enter if !new_input.is_empty() => {
+                            nrc.state = AppState::Initializing;
+
+                            // Check if we have a display name (new user) or nsec (import)
+                            if let Some(display_name) = nrc.onboarding_data.display_name.clone() {
+                                // New user with display name
+                                nrc.initialize_with_display_name_and_password(
+                                    display_name,
+                                    new_input,
+                                )
+                                .await?;
+                            } else if let Some(nsec) = nrc.onboarding_data.nsec.clone() {
+                                // Import with nsec
+                                nrc.initialize_with_nsec_and_password(nsec, new_input)
+                                    .await?;
+                            }
+                            // Clear onboarding data
+                            nrc.onboarding_data = OnboardingData {
+                                display_name: None,
+                                nsec: None,
+                            };
+                        }
+                        KeyCode::Esc => {
+                            // Go back to previous state
+                            if let Some(display_name) = nrc.onboarding_data.display_name.take() {
+                                // Was entering display name
+                                nrc.state = AppState::Onboarding {
+                                    input: display_name,
+                                    mode: OnboardingMode::EnterDisplayName,
+                                };
+                            } else if let Some(nsec) = nrc.onboarding_data.nsec.take() {
+                                // Was importing nsec
+                                nrc.state = AppState::Onboarding {
+                                    input: nsec,
+                                    mode: OnboardingMode::ImportExisting,
+                                };
+                            } else {
+                                nrc.state = AppState::Onboarding {
+                                    input: String::new(),
+                                    mode: OnboardingMode::Choose,
+                                };
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                OnboardingMode::EnterPassword => {
+                    let mut new_input = input.clone();
+                    match key.code {
+                        KeyCode::Char(c) => {
+                            new_input.push(c);
+                            nrc.state = AppState::Onboarding {
+                                input: new_input,
+                                mode,
+                            };
+                        }
+                        KeyCode::Backspace => {
+                            new_input.pop();
+                            nrc.state = AppState::Onboarding {
+                                input: new_input,
+                                mode,
+                            };
+                        }
+                        KeyCode::Enter if !new_input.is_empty() => {
+                            nrc.state = AppState::Initializing;
+                            if let Err(e) = nrc.initialize_with_password(new_input).await {
+                                // Failed to decrypt - show error and stay in password prompt
+                                nrc.last_error = Some(format!("Invalid password: {e}"));
+                                nrc.state = AppState::Onboarding {
+                                    input: String::new(),
+                                    mode: OnboardingMode::EnterPassword,
+                                };
+                            }
                         }
                         _ => {}
                     }
