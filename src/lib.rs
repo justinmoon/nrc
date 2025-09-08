@@ -123,11 +123,29 @@ pub struct Nrc {
     profiles: HashMap<PublicKey, Metadata>,
     pub event_tx: Option<mpsc::UnboundedSender<AppEvent>>,
     pub command_tx: Option<mpsc::Sender<NetworkCommand>>,
+    datadir: std::path::PathBuf,
 }
 
 impl Nrc {
     pub async fn new(datadir: &Path) -> Result<Self> {
-        let keys = Keys::generate();
+        // Create datadir if it doesn't exist
+        std::fs::create_dir_all(datadir)?;
+
+        // Check if we have existing credentials
+        let nsec_path = datadir.join("nsec");
+        let (keys, needs_onboarding) = if nsec_path.exists() {
+            // Load existing nsec
+            let nsec = std::fs::read_to_string(&nsec_path)?;
+            let keys = Keys::parse(nsec.trim())?;
+            log::info!("Loaded existing nsec from {}", nsec_path.display());
+            (keys, false)
+        } else {
+            // Generate new keys but don't save yet
+            let keys = Keys::generate();
+            log::info!("No existing nsec found, will need onboarding");
+            (keys, true)
+        };
+
         let client = Client::builder().signer(keys.clone()).build();
 
         // Add multiple relays for redundancy
@@ -142,20 +160,26 @@ impl Nrc {
         // Wait for connections to establish
         tokio::time::sleep(Duration::from_secs(2)).await;
 
-        // Create datadir if it doesn't exist
-        std::fs::create_dir_all(datadir)?;
         let db_path = datadir.join("nrc.db");
         log::info!("Using SQLite storage at: {db_path:?}");
         let storage = Box::new(NostrMls::new(NostrMlsSqliteStorage::new(db_path)?));
 
-        Ok(Self {
+        // Set initial state based on whether we have existing credentials
+        let state = if needs_onboarding {
+            AppState::Onboarding {
+                input: String::new(),
+                mode: OnboardingMode::Choose,
+            }
+        } else {
+            // Skip onboarding if we have existing credentials
+            AppState::Initializing
+        };
+
+        let mut nrc = Self {
             storage,
             keys,
             client,
-            state: AppState::Onboarding {
-                input: String::new(),
-                mode: OnboardingMode::Choose,
-            },
+            state,
             messages: HashMap::new(),
             welcome_rumors: HashMap::new(),
             groups: HashMap::new(),
@@ -169,7 +193,15 @@ impl Nrc {
             profiles: HashMap::new(),
             event_tx: None,
             command_tx: None,
-        })
+            datadir: datadir.to_path_buf(),
+        };
+
+        // If we loaded existing credentials, initialize immediately
+        if !needs_onboarding {
+            nrc.initialize_existing().await?;
+        }
+
+        Ok(nrc)
     }
 
     pub fn public_key(&self) -> PublicKey {
@@ -567,6 +599,19 @@ impl Nrc {
         self.messages.get(group_id).cloned().unwrap_or_default()
     }
 
+    fn save_nsec(&self) -> Result<()> {
+        let nsec_path = self.datadir.join("nsec");
+        let nsec = self.keys.secret_key().to_bech32()?;
+        std::fs::write(&nsec_path, nsec)?;
+        log::info!("Saved nsec to {}", nsec_path.display());
+        Ok(())
+    }
+
+    pub async fn initialize_existing(&mut self) -> Result<()> {
+        // Same as initialize but without onboarding
+        self.initialize().await
+    }
+
     pub async fn initialize(&mut self) -> Result<()> {
         self.state = AppState::Initializing;
 
@@ -598,6 +643,9 @@ impl Nrc {
 
     pub async fn initialize_with_display_name(&mut self, display_name: String) -> Result<()> {
         self.state = AppState::Initializing;
+
+        // Save the nsec when initializing with a display name (new account)
+        self.save_nsec()?;
 
         // Publish profile with display name
         self.publish_profile(display_name).await?;
@@ -660,6 +708,9 @@ impl Nrc {
 
         self.client.connect().await;
         tokio::time::sleep(Duration::from_secs(2)).await;
+
+        // Save the imported nsec
+        self.save_nsec()?;
 
         self.initialize().await
     }
