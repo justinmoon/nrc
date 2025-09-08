@@ -603,7 +603,10 @@ fn draw_info_panel(f: &mut Frame, area: Rect, nrc: &Nrc) {
         )]),
         Line::from(""),
         Line::from(vec![
-            Span::styled("/create #name <npub1> [npub2]... (/c) ", Style::default().fg(Color::Green)),
+            Span::styled(
+                "/create #name <npub1> [npub2]... (/c) ",
+                Style::default().fg(Color::Green),
+            ),
             Span::raw("Create group"),
         ]),
         Line::from(vec![
@@ -667,7 +670,10 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
         )]),
         Line::from(""),
         Line::from(vec![
-            Span::styled("/create #name <npub1> [npub2]... ", Style::default().fg(Color::Green)),
+            Span::styled(
+                "/create #name <npub1> [npub2]... ",
+                Style::default().fg(Color::Green),
+            ),
             Span::styled("(/c)", Style::default().fg(Color::DarkGray)),
             Span::raw(" - Create a multi-user group"),
         ]),

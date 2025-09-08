@@ -43,6 +43,9 @@ impl TestClient {
         // and directly call the initialization
         nrc.initialize_with_display_name(name.to_string()).await?;
 
+        // Start notification handler for real-time message processing via subscriptions
+        nrc::notification_handler::spawn_notification_handler(nrc.client.clone(), event_tx.clone());
+
         Ok(Self {
             nrc: Arc::new(Mutex::new(nrc)),
             temp_dir,
@@ -103,6 +106,9 @@ impl TestClient {
 
     /// Process events from the event queue (simulates event loop)
     pub async fn process_pending_events(&self) -> Result<()> {
+        // Give subscription handler time to receive events from relays
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
         let mut event_rx = self.event_rx.lock().await;
         let mut nrc = self.nrc.lock().await;
 

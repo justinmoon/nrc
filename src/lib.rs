@@ -334,14 +334,22 @@ impl Nrc {
         Ok(group_id)
     }
 
-    pub async fn create_multi_user_group(&mut self, channel_name: String, member_pubkeys: Vec<PublicKey>) -> Result<()> {
+    pub async fn create_multi_user_group(
+        &mut self,
+        channel_name: String,
+        member_pubkeys: Vec<PublicKey>,
+    ) -> Result<()> {
         // Fetch key packages for all members
         let mut key_packages = Vec::new();
         for pubkey in &member_pubkeys {
             match self.fetch_key_package(pubkey).await {
                 Ok(kp) => key_packages.push(kp),
                 Err(e) => {
-                    self.last_error = Some(format!("Failed to fetch key package for {}: {}", pubkey_to_bech32_safe(pubkey), e));
+                    self.last_error = Some(format!(
+                        "Failed to fetch key package for {}: {}",
+                        pubkey_to_bech32_safe(pubkey),
+                        e
+                    ));
                     return Err(e);
                 }
             }
@@ -371,11 +379,15 @@ impl Nrc {
         );
 
         // Create group with initial members
-        match self.storage.create_group(&self.keys.public_key(), key_packages, config) {
+        match self
+            .storage
+            .create_group(&self.keys.public_key(), key_packages, config)
+        {
             Ok(group_result) => {
                 let group_id = GroupId::from_slice(group_result.group.mls_group_id.as_slice());
 
-                self.groups.insert(group_id.clone(), group_result.group.clone());
+                self.groups
+                    .insert(group_id.clone(), group_result.group.clone());
 
                 // Subscribe to messages for this group
                 let h_tag_value = hex::encode(group_result.group.nostr_group_id);
@@ -403,13 +415,25 @@ impl Nrc {
                 }
 
                 // Send welcomes to all members
-                for (pubkey, welcome_rumor) in member_pubkeys.iter().zip(group_result.welcome_rumors.iter()) {
-                    if let Err(e) = self.send_gift_wrapped_welcome(pubkey, welcome_rumor.clone()).await {
-                        log::warn!("Failed to send welcome to {}: {e}", pubkey_to_bech32_safe(pubkey));
+                for (pubkey, welcome_rumor) in member_pubkeys
+                    .iter()
+                    .zip(group_result.welcome_rumors.iter())
+                {
+                    if let Err(e) = self
+                        .send_gift_wrapped_welcome(pubkey, welcome_rumor.clone())
+                        .await
+                    {
+                        log::warn!(
+                            "Failed to send welcome to {}: {e}",
+                            pubkey_to_bech32_safe(pubkey)
+                        );
                     }
                 }
 
-                self.flash_message = Some(format!("Created #{channel_name} with {} members", member_pubkeys.len()));
+                self.flash_message = Some(format!(
+                    "Created #{channel_name} with {} members",
+                    member_pubkeys.len()
+                ));
                 Ok(())
             }
             Err(e) => {
@@ -439,6 +463,11 @@ impl Nrc {
 
         // Add member to the group
         let update_result = self.storage.add_members(&group_id, &[key_package])?;
+
+        // CRITICAL: Merge the pending commit to update our local MLS group state
+        // Without this, our group state remains at the old epoch and we can't
+        // decrypt messages from the new member
+        self.storage.merge_pending_commit(&group_id)?;
 
         // Send the MLS commit/evolution event
         self.client
@@ -670,42 +699,70 @@ impl Nrc {
             log::debug!("Fetched {} events from relay", events.len());
 
             for event in events {
-                log::debug!("Processing event: {}", event.id);
-                if let Ok(MessageProcessingResult::ApplicationMessage(msg)) =
-                    self.storage.process_message(&event)
-                {
-                    log::debug!("Got ApplicationMessage, kind: {}", msg.kind);
-                    if msg.kind == Kind::TextNote {
-                        if let Ok(Some(stored_msg)) = self.storage.get_message(&msg.id) {
-                            // Check if we already have this message (by ID) to avoid duplicates
-                            let messages = self.messages.entry(group_id.clone()).or_default();
-                            let already_exists = messages.iter().any(|m| {
-                                m.content == stored_msg.content
-                                    && m.sender == stored_msg.pubkey
-                                    && m.timestamp == stored_msg.created_at
-                            });
+                log::info!(
+                    "Processing event: {} from {}",
+                    event.id,
+                    event
+                        .pubkey
+                        .to_bech32()
+                        .unwrap_or_else(|_| "unknown".to_string())
+                );
+                match self.storage.process_message(&event) {
+                    Ok(MessageProcessingResult::ApplicationMessage(msg)) => {
+                        log::info!(
+                            "Got ApplicationMessage, kind: {} from {}",
+                            msg.kind,
+                            msg.pubkey
+                                .to_bech32()
+                                .unwrap_or_else(|_| "unknown".to_string())
+                        );
+                        if msg.kind == Kind::TextNote {
+                            if let Ok(Some(stored_msg)) = self.storage.get_message(&msg.id) {
+                                // Check if we already have this message (by ID) to avoid duplicates
+                                let messages = self.messages.entry(group_id.clone()).or_default();
+                                let already_exists = messages.iter().any(|m| {
+                                    m.content == stored_msg.content
+                                        && m.sender == stored_msg.pubkey
+                                        && m.timestamp == stored_msg.created_at
+                                });
 
-                            if !already_exists {
-                                let message = Message {
-                                    content: stored_msg.content.clone(),
-                                    sender: stored_msg.pubkey,
-                                    timestamp: stored_msg.created_at,
-                                };
-                                log::info!(
-                                    "Adding message to group: '{}' from {}",
-                                    message.content,
-                                    pubkey_to_bech32_safe(&message.sender)
-                                );
-                                messages.push(message.clone());
+                                if !already_exists {
+                                    let message = Message {
+                                        content: stored_msg.content.clone(),
+                                        sender: stored_msg.pubkey,
+                                        timestamp: stored_msg.created_at,
+                                    };
+                                    log::info!(
+                                        "Adding message to group: '{}' from {}",
+                                        message.content,
+                                        pubkey_to_bech32_safe(&message.sender)
+                                    );
+                                    messages.push(message.clone());
 
-                                // Fetch profile for this sender if we don't have it
-                                if !self.profiles.contains_key(&message.sender) {
-                                    let _ = self.fetch_profile(&message.sender).await;
+                                    // Fetch profile for this sender if we don't have it
+                                    if !self.profiles.contains_key(&message.sender) {
+                                        let _ = self.fetch_profile(&message.sender).await;
+                                    }
+                                } else {
+                                    log::debug!("Message already exists, skipping");
                                 }
-                            } else {
-                                log::debug!("Message already exists, skipping");
                             }
                         }
+                    }
+                    Ok(MessageProcessingResult::Commit) => {
+                        log::info!("Processed commit/evolution event - group state updated");
+                    }
+                    Ok(MessageProcessingResult::Proposal(_)) => {
+                        log::debug!("Processed proposal");
+                    }
+                    Ok(MessageProcessingResult::ExternalJoinProposal) => {
+                        log::debug!("Processed external join proposal");
+                    }
+                    Ok(MessageProcessingResult::Unprocessable) => {
+                        log::debug!("Message was unprocessable");
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to process message: {e}");
                     }
                 }
             }
@@ -953,7 +1010,7 @@ impl Nrc {
     pub fn get_groups(&self) -> Vec<GroupId> {
         self.groups.keys().cloned().collect()
     }
-    
+
     pub fn get_member_count(&self, group_id: &GroupId) -> Option<usize> {
         match self.storage.get_members(group_id) {
             Ok(members) => Some(members.len()),
@@ -1004,8 +1061,18 @@ impl Nrc {
 
         // Otherwise it's a message - send to selected chat
         if let Some(group_id) = self.get_selected_group() {
-            if let Err(e) = self.send_message(group_id, input).await {
+            log::info!(
+                "Sending message '{}' to group {}",
+                input,
+                hex::encode(group_id.as_slice())
+            );
+            if let Err(e) = self.send_message(group_id.clone(), input).await {
                 self.last_error = Some(format!("Failed to send: {e}"));
+            } else {
+                log::info!(
+                    "Message sent successfully to group {}",
+                    hex::encode(group_id.as_slice())
+                );
             }
         } else {
             self.last_error = Some("No chat selected".to_string());
@@ -1072,7 +1139,8 @@ impl Nrc {
         if input.starts_with("/create ") || input.starts_with("/c ") {
             let parts: Vec<&str> = input.split_whitespace().collect();
             if parts.len() < 3 {
-                self.last_error = Some("Usage: /create #channelname <npub1> [npub2] ...".to_string());
+                self.last_error =
+                    Some("Usage: /create #channelname <npub1> [npub2] ...".to_string());
                 return Ok(false);
             }
 
@@ -1088,13 +1156,16 @@ impl Nrc {
                 match PublicKey::from_str(pubkey_str) {
                     Ok(pubkey) => member_pubkeys.push(pubkey),
                     Err(e) => {
-                        self.last_error = Some(format!("Invalid public key {}: {}", pubkey_str, e));
+                        self.last_error = Some(format!("Invalid public key {pubkey_str}: {e}"));
                         return Ok(false);
                     }
                 }
             }
 
-            match self.create_multi_user_group(channel_name.to_string(), member_pubkeys).await {
+            match self
+                .create_multi_user_group(channel_name.to_string(), member_pubkeys)
+                .await
+            {
                 Ok(()) => {
                     // Flash message is set by create_multi_user_group
                 }
@@ -1420,52 +1491,70 @@ impl Nrc {
     pub async fn process_message_event(&mut self, event: Event) -> Result<()> {
         log::debug!("Processing message event: {}", event.id);
 
-        if let Ok(MessageProcessingResult::ApplicationMessage(msg)) =
-            self.storage.process_message(&event)
-        {
-            if msg.kind == Kind::TextNote {
-                if let Ok(Some(stored_msg)) = self.storage.get_message(&msg.id) {
-                    // Find which group this belongs to based on the h tag
-                    for (group_id, group) in &self.groups {
-                        let h_tag_value = hex::encode(group.nostr_group_id);
+        match self.storage.process_message(&event) {
+            Ok(MessageProcessingResult::ApplicationMessage(msg)) => {
+                log::debug!("Got ApplicationMessage, kind: {}", msg.kind);
+                if msg.kind == Kind::TextNote {
+                    if let Ok(Some(stored_msg)) = self.storage.get_message(&msg.id) {
+                        // Find which group this belongs to based on the h tag
+                        for (group_id, group) in &self.groups {
+                            let h_tag_value = hex::encode(group.nostr_group_id);
 
-                        // Check if this message belongs to this group
-                        let belongs_to_group = event.tags.iter().any(|tag| {
-                            tag.as_slice().len() >= 2
-                                && tag.as_slice()[0] == "h"
-                                && tag.as_slice()[1] == h_tag_value
-                        });
-
-                        if belongs_to_group {
-                            let messages = self.messages.entry(group_id.clone()).or_default();
-                            let already_exists = messages.iter().any(|m| {
-                                m.content == stored_msg.content
-                                    && m.sender == stored_msg.pubkey
-                                    && m.timestamp == stored_msg.created_at
+                            // Check if this message belongs to this group
+                            let belongs_to_group = event.tags.iter().any(|tag| {
+                                tag.as_slice().len() >= 2
+                                    && tag.as_slice()[0] == "h"
+                                    && tag.as_slice()[1] == h_tag_value
                             });
 
-                            if !already_exists {
-                                let message = Message {
-                                    content: stored_msg.content.clone(),
-                                    sender: stored_msg.pubkey,
-                                    timestamp: stored_msg.created_at,
-                                };
-                                log::info!(
-                                    "Adding message to group: '{}' from {}",
-                                    message.content,
-                                    pubkey_to_bech32_safe(&message.sender)
-                                );
-                                messages.push(message.clone());
+                            if belongs_to_group {
+                                let messages = self.messages.entry(group_id.clone()).or_default();
+                                let already_exists = messages.iter().any(|m| {
+                                    m.content == stored_msg.content
+                                        && m.sender == stored_msg.pubkey
+                                        && m.timestamp == stored_msg.created_at
+                                });
 
-                                // Fetch profile in background if we don't have it
-                                if !self.profiles.contains_key(&message.sender) {
-                                    let _ = self.fetch_profile(&message.sender).await;
+                                if !already_exists {
+                                    let message = Message {
+                                        content: stored_msg.content.clone(),
+                                        sender: stored_msg.pubkey,
+                                        timestamp: stored_msg.created_at,
+                                    };
+                                    log::info!(
+                                        "Adding message to group: '{}' from {}",
+                                        message.content,
+                                        pubkey_to_bech32_safe(&message.sender)
+                                    );
+                                    messages.push(message.clone());
+
+                                    // Fetch profile in background if we don't have it
+                                    if !self.profiles.contains_key(&message.sender) {
+                                        let _ = self.fetch_profile(&message.sender).await;
+                                    }
                                 }
+                                break;
                             }
-                            break;
                         }
                     }
                 }
+            }
+            Ok(MessageProcessingResult::Commit) => {
+                log::info!(
+                    "Processed commit/evolution event via subscription - group state updated"
+                );
+            }
+            Ok(MessageProcessingResult::Proposal(_)) => {
+                log::debug!("Processed proposal via subscription");
+            }
+            Ok(MessageProcessingResult::ExternalJoinProposal) => {
+                log::debug!("Processed external join proposal via subscription");
+            }
+            Ok(MessageProcessingResult::Unprocessable) => {
+                log::debug!("Message was unprocessable");
+            }
+            Err(e) => {
+                log::debug!("Failed to process message event: {e}");
             }
         }
 
