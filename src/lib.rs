@@ -1,8 +1,8 @@
 use anyhow::Result;
 use crossterm::event::KeyEvent;
-use nostr_mls::{groups::NostrGroupConfigData, messages::MessageProcessingResult, NostrMls};
-use nostr_mls_sqlite_storage::NostrMlsSqliteStorage;
-use nostr_mls_storage::groups::types as group_types;
+use nrc_mls::{groups::NostrGroupConfigData, messages::MessageProcessingResult, NostrMls};
+use nrc_mls_sqlite_storage::NostrMlsSqliteStorage;
+use nrc_mls_storage::groups::types as group_types;
 use nostr_sdk::prelude::*;
 use openmls::group::GroupId;
 use std::collections::HashMap;
