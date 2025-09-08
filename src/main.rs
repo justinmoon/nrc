@@ -8,7 +8,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use nrc::{AppEvent, AppState, NetworkCommand, Nrc, OnboardingData, OnboardingMode};
+use nrc::{AppEvent, AppState, NetworkCommand, Nrc, OnboardingData, OnboardingMode, UiState};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::fs::{self, OpenOptions};
 use std::io;
@@ -120,6 +120,7 @@ async fn run_app<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     nrc: &mut Nrc,
 ) -> Result<()> {
+    let mut ui_state = UiState::default();
     let (event_tx, mut event_rx) = mpsc::unbounded_channel();
     let (command_tx, _command_rx) = mpsc::channel(100);
 
@@ -150,19 +151,19 @@ async fn run_app<B: ratatui::backend::Backend>(
     // Main event loop - THE ONLY PLACE WHERE STATE CHANGES
     loop {
         // Draw UI
-        terminal.draw(|f| tui::draw(f, nrc))?;
+        terminal.draw(|f| tui::draw(f, nrc, &ui_state))?;
 
         // Process events with small timeout for refresh rate
         match timeout(Duration::from_millis(50), event_rx.recv()).await {
             Ok(Some(event)) => {
                 match event {
                     AppEvent::KeyPress(key) => {
-                        if handle_key_press(nrc, key, &command_tx).await? {
+                        if handle_key_press(nrc, key, &command_tx, &mut ui_state).await? {
                             return Ok(()); // Quit
                         }
                     }
                     AppEvent::Paste(text) => {
-                        handle_paste(nrc, text);
+                        handle_paste(nrc, text, &mut ui_state);
                     }
                     AppEvent::MessageReceived { group_id, message } => {
                         nrc.add_message(group_id, message);
@@ -171,7 +172,7 @@ async fn run_app<B: ratatui::backend::Backend>(
                         nrc.add_group(group_id);
                     }
                     AppEvent::NetworkError { error } => {
-                        nrc.last_error = Some(error);
+                        ui_state.error_message = Some(error);
                     }
                     // Timer-based fetch events removed - now handled by subscription notifications
                     AppEvent::ProcessPendingOperationsTick => {
@@ -216,11 +217,13 @@ async fn run_app<B: ratatui::backend::Backend>(
     Ok(())
 }
 
-fn handle_paste(nrc: &mut Nrc, text: String) {
+fn handle_paste(nrc: &mut Nrc, text: String, ui_state: &mut UiState) {
     // Only handle paste in Ready state
     if matches!(nrc.state, AppState::Ready { .. }) {
         nrc.input.push_str(&text);
-        nrc.clear_error(); // Clear error on new input
+        // Clear errors on new input
+        ui_state.error_message = None;
+        ui_state.flash_message = None;
         log::debug!("Pasted text: '{}', Input now: '{}'", text, nrc.input);
     } else if let AppState::Onboarding { ref mut input, .. } = nrc.state {
         // Also handle paste during onboarding
@@ -232,6 +235,7 @@ async fn handle_key_press(
     nrc: &mut Nrc,
     key: KeyEvent,
     _command_tx: &mpsc::Sender<NetworkCommand>,
+    ui_state: &mut UiState,
 ) -> Result<bool> {
     // Only allow Ctrl+C for emergency exit
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
@@ -424,7 +428,7 @@ async fn handle_key_press(
                             nrc.state = AppState::Initializing;
                             if let Err(e) = nrc.initialize_with_password(new_input).await {
                                 // Failed to decrypt - show error and stay in password prompt
-                                nrc.last_error = Some(format!("Invalid password: {e}"));
+                                ui_state.error_message = Some(format!("Invalid password: {e}"));
                                 nrc.state = AppState::Onboarding {
                                     input: String::new(),
                                     mode: OnboardingMode::EnterPassword,
@@ -462,7 +466,9 @@ async fn handle_key_press(
                 // Regular character input
                 KeyCode::Char(c) => {
                     nrc.input.push(c);
-                    nrc.clear_error(); // Clear error on new input
+                    // Clear errors on new input
+                    ui_state.error_message = None;
+                    ui_state.flash_message = None;
                     log::debug!("Input after char '{}': '{}'", c, nrc.input);
                 }
                 KeyCode::Backspace => {
@@ -471,8 +477,18 @@ async fn handle_key_press(
                 KeyCode::Enter if !nrc.input.is_empty() => {
                     let input = nrc.input.clone();
                     nrc.input.clear();
-                    if nrc.process_input(input).await? {
-                        return Ok(true); // Quit was requested
+                    match nrc.process_input(input).await {
+                        Ok(quit) => {
+                            if quit {
+                                return Ok(true); // Quit was requested
+                            }
+                            // Clear error on successful command
+                            ui_state.error_message = None;
+                        }
+                        Err(e) => {
+                            // Store error for display
+                            ui_state.error_message = Some(format!("{e:#}"));
+                        }
                     }
                 }
                 _ => {}

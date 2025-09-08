@@ -1,5 +1,5 @@
 use nostr_sdk::prelude::ToBech32;
-use nrc::{AppState, Nrc, OnboardingMode};
+use nrc::{AppState, Nrc, OnboardingMode, UiState};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -8,7 +8,7 @@ use ratatui::{
     Frame,
 };
 
-pub fn draw(f: &mut Frame, nrc: &Nrc) {
+pub fn draw(f: &mut Frame, nrc: &Nrc, ui_state: &UiState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0)])
@@ -16,13 +16,13 @@ pub fn draw(f: &mut Frame, nrc: &Nrc) {
 
     match &nrc.state {
         AppState::Onboarding { input, mode } => {
-            draw_onboarding(f, chunks[0], input, mode, nrc.last_error.as_deref());
+            draw_onboarding(f, chunks[0], input, mode, ui_state.error_message.as_deref());
         }
         AppState::Initializing => {
             draw_initializing(f, chunks[0]);
         }
         AppState::Ready { groups, .. } => {
-            draw_ready_view(f, chunks[0], nrc, groups);
+            draw_ready_view(f, chunks[0], nrc, groups, ui_state);
         }
     }
 }
@@ -357,7 +357,13 @@ fn draw_initializing(f: &mut Frame, area: Rect) {
     f.render_widget(paragraph, inner);
 }
 
-fn draw_ready_view(f: &mut Frame, area: Rect, nrc: &Nrc, groups: &[openmls::group::GroupId]) {
+fn draw_ready_view(
+    f: &mut Frame,
+    area: Rect,
+    nrc: &Nrc,
+    groups: &[openmls::group::GroupId],
+    ui_state: &UiState,
+) {
     // Show help overlay if active
     if nrc.show_help {
         draw_help_overlay(f, area);
@@ -400,7 +406,7 @@ fn draw_ready_view(f: &mut Frame, area: Rect, nrc: &Nrc, groups: &[openmls::grou
     f.render_widget(list, chunks[0]);
 
     // Handle right side layout based on whether there's an error
-    if let Some(ref error) = nrc.last_error {
+    if let Some(ref error) = ui_state.error_message {
         // Calculate how many lines the error needs (with wrapping)
         let available_width = chunks[1].width.saturating_sub(4) as usize; // Subtract borders and padding
         let estimated_lines = if available_width > 0 {
@@ -492,7 +498,7 @@ fn draw_ready_view(f: &mut Frame, area: Rect, nrc: &Nrc, groups: &[openmls::grou
         }
 
         // Draw input box with optional flash message
-        draw_input_with_flash(f, right_chunks[1], nrc);
+        draw_input_with_flash(f, right_chunks[1], nrc, ui_state);
     }
 }
 
@@ -814,9 +820,9 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
         .split(popup_layout[1])[1]
 }
 
-fn draw_input_with_flash(f: &mut Frame, area: Rect, nrc: &Nrc) {
+fn draw_input_with_flash(f: &mut Frame, area: Rect, nrc: &Nrc, ui_state: &UiState) {
     // Check if we need to show flash message
-    if let Some(ref flash) = nrc.flash_message {
+    if let Some(ref flash) = ui_state.flash_message {
         // Split area for flash message and input
         let chunks = Layout::default()
             .direction(Direction::Vertical)

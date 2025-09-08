@@ -298,8 +298,7 @@ impl Nrc {
                                     if let Some(idx) = groups.iter().position(|g| g == &group_id) {
                                         self.selected_group_index = Some(idx);
                                     }
-                                    self.flash_message =
-                                        Some("Joined new group via invitation!".to_string());
+                                    log::info!("Joined new group via invitation!");
                                 }
                             }
                         }

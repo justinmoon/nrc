@@ -2,6 +2,13 @@ use crossterm::event::KeyEvent;
 use nostr_sdk::prelude::*;
 use openmls::group::GroupId;
 
+/// UI state that's separate from business logic
+#[derive(Debug, Clone, Default)]
+pub struct UiState {
+    pub error_message: Option<String>,
+    pub flash_message: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub enum AppEvent {
     // UI Events

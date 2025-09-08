@@ -1,45 +1,28 @@
 use anyhow::Result;
-use nostr_sdk::prelude::*;
-use nrc::Nrc;
 use std::time::Duration;
+
+// Import the TestClient to use the proper error handling approach
+mod common;
+use common::TestClient;
 
 #[tokio::test]
 async fn exact_tui_scenario_test() -> Result<()> {
     env_logger::init();
 
-    // Use random temp dirs to avoid conflicts
-    let top_dir = std::env::temp_dir().join(format!("nrc_test_top_{}", rand::random::<u32>()));
-    let bottom_dir =
-        std::env::temp_dir().join(format!("nrc_test_bottom_{}", rand::random::<u32>()));
-
-    // Clean up first
-    let _ = std::fs::remove_dir_all(&top_dir);
-    let _ = std::fs::remove_dir_all(&bottom_dir);
-    std::fs::create_dir_all(&top_dir)?;
-    std::fs::create_dir_all(&bottom_dir)?;
-
     // === STEP 1: Create TOP client (like starting TUI) ===
     println!("\n=== CREATING TOP CLIENT ===");
-    let mut top = Nrc::new(&top_dir).await?;
-
-    // User enters display name in TUI onboarding
-    top.initialize_with_display_name("top".to_string()).await?;
+    let top = TestClient::new("top").await?;
 
     // User runs /n command in TUI
     println!("TOP: Running /n command");
-    top.process_input("/n".to_string()).await?;
+    top.execute_command("/n").await?;
 
-    let top_npub = top.public_key().to_bech32()?;
+    let top_npub = top.npub().await?;
     println!("TOP npub: {top_npub}");
 
     // === STEP 2: Create BOTTOM client (like starting second TUI) ===
     println!("\n=== CREATING BOTTOM CLIENT ===");
-    let mut bottom = Nrc::new(&bottom_dir).await?;
-
-    // User enters display name in TUI onboarding
-    bottom
-        .initialize_with_display_name("bottom".to_string())
-        .await?;
+    let bottom = TestClient::new("bottom").await?;
 
     // Wait for key package to propagate
     println!("\n=== WAITING FOR KEY PACKAGE PROPAGATION ===");
@@ -50,18 +33,11 @@ async fn exact_tui_scenario_test() -> Result<()> {
 
     // User types /d <npub> in TUI and hits enter
     let input = format!("/d {top_npub}");
-    bottom.process_input(input).await?;
-
-    // Check if there was an error displayed in TUI
-    assert!(
-        bottom.last_error.is_none(),
-        "BOTTOM should not have errors after /d command, but got: {:?}",
-        bottom.last_error
-    );
+    bottom.execute_command(&input).await?; // If this succeeds, no error occurred
 
     // Check bottom's state (what TUI would show)
-    let bottom_groups = bottom.get_groups();
-    println!("BOTTOM groups after /j: {} groups", bottom_groups.len());
+    let bottom_group_count = bottom.group_count().await;
+    println!("BOTTOM groups after /d: {bottom_group_count} groups");
 
     // === STEP 4: Wait for GiftWrap to propagate ===
     println!("\n=== WAITING FOR GIFTWRAP PROPAGATION ===");
@@ -78,47 +54,31 @@ async fn exact_tui_scenario_test() -> Result<()> {
         tokio::time::sleep(Duration::from_secs(3)).await;
 
         // Trigger the same background fetch that timer would trigger
-        let _ = top.fetch_and_process_welcomes().await;
+        let _ = top.trigger_fetch_welcomes().await;
 
         // Check if we found anything
-        let groups = top.get_groups();
-        if !groups.is_empty() {
+        let group_count = top.group_count().await;
+        if group_count > 0 {
             println!("Found group on attempt {}", i + 1);
             break;
         }
     }
 
     // === STEP 6: Check if TOP joined the group ===
-    let top_groups = top.get_groups();
+    let top_group_count = top.group_count().await;
     println!("\n=== RESULT ===");
-    println!("TOP groups: {} groups", top_groups.len());
+    println!("TOP groups: {top_group_count} groups");
 
-    if top_groups.is_empty() {
+    if top_group_count == 0 {
         println!("FAILURE: TOP has no groups - notification not received!");
         println!("This matches your bug report - TOP never gets notified");
-
-        // Show state for debugging
-        if let Some(error) = &top.last_error {
-            println!("TOP ERROR: {error}");
-        }
-
-        // Also assert no errors on TOP
-        assert!(
-            top.last_error.is_none(),
-            "TOP should not have errors, but got: {:?}",
-            top.last_error
-        );
     } else {
         println!("SUCCESS: TOP joined the group!");
     }
 
-    // Clean up
-    let _ = std::fs::remove_dir_all(&top_dir);
-    let _ = std::fs::remove_dir_all(&bottom_dir);
-
     // This should pass if the bug is fixed
     assert!(
-        !top_groups.is_empty(),
+        top_group_count > 0,
         "TOP should have received notification and joined group"
     );
 

@@ -26,7 +26,9 @@ pub mod utils;
 
 // Re-export commonly used types
 pub use config::DEFAULT_RELAYS;
-pub use types::{AppEvent, AppState, Message, NetworkCommand, OnboardingData, OnboardingMode};
+pub use types::{
+    AppEvent, AppState, Message, NetworkCommand, OnboardingData, OnboardingMode, UiState,
+};
 pub use utils::pubkey_to_bech32_safe;
 
 pub struct Nrc {
@@ -40,8 +42,6 @@ pub struct Nrc {
     pub input: String,
     pub selected_group_index: Option<usize>,
     pub scroll_offset: u16,
-    pub last_error: Option<String>,
-    pub flash_message: Option<String>,
     pub show_help: bool,
     pub help_explicitly_requested: bool,
     pub(crate) profiles: HashMap<PublicKey, Metadata>,
@@ -110,8 +110,6 @@ impl Nrc {
             input: String::new(),
             selected_group_index: None,
             scroll_offset: 0,
-            last_error: None,
-            flash_message: None,
             show_help: false,
             help_explicitly_requested: false,
             profiles: HashMap::new(),
