@@ -1,0 +1,386 @@
+use nrc::app::App;
+use nrc::ui_state::{
+    Contact, GroupSummary, Message, Modal, OnboardingMode, Page, SettingField, UserSettings,
+};
+use ratatui::{
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Color, Style},
+    text::{Line, Text},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
+    Frame,
+};
+
+pub fn render(f: &mut Frame, app: &App) {
+    match &app.current_page {
+        Page::Onboarding { input, mode, error } => render_onboarding(f, input, mode, error),
+        Page::Initializing { message, progress } => render_initializing(f, message, *progress),
+        Page::GroupList {
+            groups,
+            selected_index,
+            filter,
+        } => render_group_list(f, groups, *selected_index, filter),
+        Page::Chat {
+            group_info,
+            messages,
+            input,
+            scroll_offset,
+            ..
+        } => render_chat(f, group_info.as_ref(), messages, input, *scroll_offset),
+        Page::CreateGroup {
+            name_input,
+            member_search,
+            selected_members,
+            available_members,
+        } => render_create_group(
+            f,
+            name_input,
+            member_search,
+            selected_members,
+            available_members,
+        ),
+        Page::Settings {
+            current_settings,
+            edited_settings,
+            selected_field,
+        } => render_settings(f, current_settings, edited_settings, selected_field),
+        Page::Help { selected_section } => render_help(f, *selected_section),
+    }
+
+    if let Some(modal) = &app.modal {
+        render_modal(f, modal);
+    }
+
+    if let Some((msg, expiry)) = &app.flash {
+        if std::time::Instant::now() < *expiry {
+            render_flash(f, msg);
+        }
+    }
+}
+
+fn render_onboarding(f: &mut Frame, input: &str, mode: &OnboardingMode, error: &Option<String>) {
+    let size = f.area();
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(2)
+        .constraints([
+            Constraint::Length(3), // Title
+            Constraint::Min(5),    // Content
+            Constraint::Length(1), // Error
+        ])
+        .split(size);
+
+    let title = Paragraph::new("NRC - Nostr Relay Chat")
+        .style(Style::default().fg(Color::Green))
+        .block(Block::default().borders(Borders::ALL));
+    f.render_widget(title, chunks[0]);
+
+    let content = match mode {
+        OnboardingMode::Choose => Text::from(vec![
+            Line::from("Welcome to NRC!"),
+            Line::from(""),
+            Line::from("Choose an option:"),
+            Line::from("1. Generate new keys"),
+            Line::from("2. Import existing keys"),
+            Line::from(""),
+            Line::from(format!("Your choice: {input}")),
+        ]),
+        OnboardingMode::GenerateNew => Text::from("Generating new keys..."),
+        OnboardingMode::EnterDisplayName => Text::from(vec![
+            Line::from("Enter your display name:"),
+            Line::from(""),
+            Line::from(format!("Name: {input}")),
+            Line::from(""),
+            Line::from("Press Enter to continue, Esc to go back"),
+        ]),
+        OnboardingMode::CreatePassword => {
+            let masked = "*".repeat(input.len());
+            Text::from(vec![
+                Line::from("Create a password to encrypt your keys:"),
+                Line::from("(minimum 8 characters)"),
+                Line::from(""),
+                Line::from(format!("Password: {masked}")),
+                Line::from(""),
+                Line::from("Press Enter to continue, Esc to go back"),
+            ])
+        }
+        OnboardingMode::ImportExisting => Text::from(vec![
+            Line::from("Enter your private key (nsec):"),
+            Line::from(""),
+            Line::from(format!("Key: {}", "*".repeat(input.len()))),
+            Line::from(""),
+            Line::from("Press Enter to continue, Esc to go back"),
+        ]),
+        OnboardingMode::EnterPassword => {
+            let masked = "*".repeat(input.len());
+            Text::from(vec![
+                Line::from("Enter your password to unlock keys:"),
+                Line::from(""),
+                Line::from(format!("Password: {masked}")),
+                Line::from(""),
+                Line::from("Press Enter to continue"),
+            ])
+        }
+    };
+
+    let content_block = Paragraph::new(content).block(Block::default().borders(Borders::ALL));
+    f.render_widget(content_block, chunks[1]);
+
+    if let Some(error_msg) = error {
+        let error_widget =
+            Paragraph::new(error_msg.as_str()).style(Style::default().fg(Color::Red));
+        f.render_widget(error_widget, chunks[2]);
+    }
+}
+
+fn render_initializing(f: &mut Frame, message: &str, _progress: f32) {
+    let size = f.area();
+
+    let text = Text::from(vec![
+        Line::from(""),
+        Line::from(message),
+        Line::from(""),
+        Line::from("Please wait..."),
+    ]);
+
+    let paragraph = Paragraph::new(text)
+        .style(Style::default().fg(Color::Yellow))
+        .block(Block::default().borders(Borders::ALL).title("Initializing"));
+
+    let area = centered_rect(50, 25, size);
+    f.render_widget(paragraph, area);
+}
+
+fn render_group_list(
+    f: &mut Frame,
+    groups: &[GroupSummary],
+    selected_index: usize,
+    _filter: &Option<String>,
+) {
+    let size = f.area();
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // Title
+            Constraint::Min(0),    // Groups
+            Constraint::Length(3), // Help
+        ])
+        .split(size);
+
+    let title = Paragraph::new("Groups")
+        .style(Style::default().fg(Color::Green))
+        .block(Block::default().borders(Borders::ALL));
+    f.render_widget(title, chunks[0]);
+
+    let items: Vec<ListItem> = groups
+        .iter()
+        .enumerate()
+        .map(|(i, group)| {
+            let style = if i == selected_index {
+                Style::default().bg(Color::Blue).fg(Color::White)
+            } else {
+                Style::default()
+            };
+
+            let last_msg = group
+                .last_message
+                .as_ref()
+                .map(|m| format!(" - {}", m.content))
+                .unwrap_or_default();
+
+            ListItem::new(format!(
+                "{} ({}){}",
+                group.name, group.member_count, last_msg
+            ))
+            .style(style)
+        })
+        .collect();
+
+    let list = List::new(items).block(Block::default().borders(Borders::ALL));
+    f.render_widget(list, chunks[1]);
+
+    let help = Paragraph::new("↑/↓: Navigate, Enter: Join group, Ctrl+N: New group, F1: Help")
+        .style(Style::default().fg(Color::Gray))
+        .block(Block::default().borders(Borders::ALL));
+    f.render_widget(help, chunks[2]);
+}
+
+fn render_chat(
+    f: &mut Frame,
+    group_info: &nrc_mls_storage::groups::types::Group,
+    messages: &[Message],
+    input: &str,
+    scroll_offset: usize,
+) {
+    let size = f.area();
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // Header
+            Constraint::Min(0),    // Messages
+            Constraint::Length(3), // Input
+        ])
+        .split(size);
+
+    let header = Paragraph::new(format!("Chat: {} (0 members)", group_info.name))
+        .style(Style::default().fg(Color::Green))
+        .block(Block::default().borders(Borders::ALL));
+    f.render_widget(header, chunks[0]);
+
+    let visible_messages = messages
+        .iter()
+        .skip(scroll_offset)
+        .take(chunks[1].height as usize - 2);
+
+    let message_items: Vec<ListItem> = visible_messages
+        .map(|msg| {
+            let sender = format!("{}", msg.sender);
+            ListItem::new(format!("{sender}: {}", msg.content))
+        })
+        .collect();
+
+    let messages_list = List::new(message_items).block(Block::default().borders(Borders::ALL));
+    f.render_widget(messages_list, chunks[1]);
+
+    let input_widget = Paragraph::new(input)
+        .style(Style::default())
+        .block(Block::default().borders(Borders::ALL).title("Message"));
+    f.render_widget(input_widget, chunks[2]);
+}
+
+fn render_create_group(
+    f: &mut Frame,
+    name_input: &str,
+    _member_search: &str,
+    _selected_members: &[nostr_sdk::PublicKey],
+    _available_members: &[Contact],
+) {
+    let size = f.area();
+
+    let text = Text::from(vec![
+        Line::from("Create New Group"),
+        Line::from(""),
+        Line::from(format!("Group name: {name_input}")),
+        Line::from(""),
+        Line::from("Press Enter to create, Esc to cancel"),
+    ]);
+
+    let paragraph =
+        Paragraph::new(text).block(Block::default().borders(Borders::ALL).title("Create Group"));
+    f.render_widget(paragraph, size);
+}
+
+fn render_settings(
+    f: &mut Frame,
+    _current_settings: &UserSettings,
+    edited_settings: &UserSettings,
+    _selected_field: &SettingField,
+) {
+    let size = f.area();
+
+    let text = Text::from(vec![
+        Line::from("Settings"),
+        Line::from(""),
+        Line::from(format!("Display Name: {}", edited_settings.display_name)),
+        Line::from(format!("Relays: {}", edited_settings.relays.join(", "))),
+        Line::from(format!(
+            "Notifications: {}",
+            edited_settings.notification_enabled
+        )),
+        Line::from(""),
+        Line::from("Press Esc to go back"),
+    ]);
+
+    let paragraph =
+        Paragraph::new(text).block(Block::default().borders(Borders::ALL).title("Settings"));
+    f.render_widget(paragraph, size);
+}
+
+fn render_help(f: &mut Frame, _selected_section: usize) {
+    let size = f.area();
+
+    let text = Text::from(vec![
+        Line::from("NRC Help"),
+        Line::from(""),
+        Line::from("Navigation:"),
+        Line::from("  ↑/↓: Navigate lists"),
+        Line::from("  Enter: Select/Join"),
+        Line::from("  Esc: Go back"),
+        Line::from(""),
+        Line::from("Shortcuts:"),
+        Line::from("  Ctrl+N: New group"),
+        Line::from("  Ctrl+S: Settings"),
+        Line::from("  F1: This help"),
+        Line::from(""),
+        Line::from("Press any key to close help"),
+    ]);
+
+    let paragraph =
+        Paragraph::new(text).block(Block::default().borders(Borders::ALL).title("Help"));
+    f.render_widget(paragraph, size);
+}
+
+fn render_modal(f: &mut Frame, modal: &Modal) {
+    let size = f.area();
+    let area = centered_rect(60, 20, size);
+
+    f.render_widget(Clear, area);
+
+    let text = match modal {
+        Modal::Confirm { message, .. } => Text::from(vec![
+            Line::from(message.as_str()),
+            Line::from(""),
+            Line::from("Y/N to confirm/cancel"),
+        ]),
+        Modal::Error { message } => Text::from(vec![
+            Line::from(message.as_str()),
+            Line::from(""),
+            Line::from("Press any key to continue"),
+        ]),
+        Modal::Info { message } => Text::from(vec![
+            Line::from(message.as_str()),
+            Line::from(""),
+            Line::from("Press any key to continue"),
+        ]),
+    };
+
+    let block = Block::default().borders(Borders::ALL).title("Modal");
+    let paragraph = Paragraph::new(text).block(block);
+    f.render_widget(paragraph, area);
+}
+
+fn render_flash(f: &mut Frame, message: &str) {
+    let size = f.area();
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: size.width,
+        height: 1,
+    };
+
+    let paragraph =
+        Paragraph::new(message).style(Style::default().bg(Color::Yellow).fg(Color::Black));
+    f.render_widget(paragraph, area);
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
+}

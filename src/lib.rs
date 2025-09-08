@@ -12,8 +12,10 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 // Module declarations
+pub mod app;
 pub mod commands;
 pub mod config;
+pub mod events;
 pub mod groups;
 pub mod key_storage;
 pub mod messages;
@@ -22,11 +24,15 @@ pub mod notification_handler;
 pub mod profiles;
 pub mod state;
 pub mod types;
+pub mod ui_state;
 pub mod utils;
 
 // Re-export commonly used types
+pub use app::App;
 pub use config::DEFAULT_RELAYS;
+pub use events::{AppEvent as ReactiveAppEvent, NetworkCommand as ReactiveNetworkCommand};
 pub use types::{AppEvent, AppState, Message, NetworkCommand, OnboardingData, OnboardingMode};
+pub use ui_state::{Page, PageType};
 pub use utils::pubkey_to_bech32_safe;
 
 pub struct Nrc {

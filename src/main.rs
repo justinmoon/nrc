@@ -1,4 +1,5 @@
 mod keyboard;
+mod render;
 mod tui;
 
 use anyhow::Result;
@@ -8,11 +9,16 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use nrc::{AppEvent, AppState, NetworkCommand, Nrc, OnboardingData, OnboardingMode};
+use nrc::ui_state::OnboardingMode as ReactiveOnboardingMode;
+use nrc::{
+    App, AppEvent, AppState, NetworkCommand, Nrc, OnboardingData, OnboardingMode, Page,
+    ReactiveAppEvent,
+};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::fs::{self, OpenOptions};
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration};
 
@@ -99,7 +105,11 @@ async fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let res = run_app(&mut terminal, &mut nrc).await;
+    let res = if std::env::var("NRC_REACTIVE").is_ok() {
+        run_reactive_app(&mut terminal, &args.datadir).await
+    } else {
+        run_app(&mut terminal, &mut nrc).await
+    };
 
     disable_raw_mode()?;
     execute!(
@@ -111,6 +121,133 @@ async fn main() -> Result<()> {
 
     if let Err(err) = res {
         eprintln!("Error: {err:?}");
+    }
+
+    Ok(())
+}
+
+async fn run_reactive_app<B: ratatui::backend::Backend>(
+    terminal: &mut Terminal<B>,
+    datadir: &Path,
+) -> Result<()> {
+    use nostr_sdk::prelude::*;
+    use nrc::config::get_default_relays;
+    use nrc_mls::NostrMls;
+    use nrc_mls_sqlite_storage::NostrMlsSqliteStorage;
+
+    let key_storage = nrc::key_storage::KeyStorage::new(datadir);
+
+    let (keys, initial_page) = if key_storage.keys_exist() {
+        let keys = Keys::generate();
+        (
+            keys,
+            Page::Onboarding {
+                input: String::new(),
+                mode: ReactiveOnboardingMode::EnterPassword,
+                error: None,
+            },
+        )
+    } else {
+        let keys = Keys::generate();
+        (
+            keys,
+            Page::Onboarding {
+                input: String::new(),
+                mode: ReactiveOnboardingMode::Choose,
+                error: None,
+            },
+        )
+    };
+
+    let client = Client::builder().signer(keys.clone()).build();
+
+    for &relay in get_default_relays() {
+        if let Err(e) = client.add_relay(relay).await {
+            log::warn!("Failed to add relay {relay}: {e}");
+        }
+    }
+
+    client.connect().await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let db_path = datadir.join("nrc.db");
+    #[allow(clippy::arc_with_non_send_sync)]
+    let storage = Arc::new(NostrMls::new(NostrMlsSqliteStorage::new(db_path)?));
+
+    let mut app = App::new(
+        storage.clone(),
+        client.clone(),
+        keys,
+        key_storage,
+        initial_page,
+    )
+    .await?;
+
+    let mut state_rx = app.get_state_receiver();
+    let event_rx = app.event_rx.take().unwrap();
+
+    let event_tx = app.event_tx.clone();
+    keyboard::spawn_reactive_keyboard_listener(event_tx.clone());
+    nrc::notification_handler::spawn_reactive_notification_handler(
+        client.clone(),
+        event_tx.clone(),
+    );
+
+    let ops_event_tx = event_tx.clone();
+    tokio::spawn(async move {
+        use tokio::time::{interval, Duration};
+        let mut pending_ops_interval = interval(Duration::from_secs(30));
+
+        loop {
+            pending_ops_interval.tick().await;
+            let _ = ops_event_tx.send(ReactiveAppEvent::ProcessPendingOperationsTick);
+        }
+    });
+
+    let mut last_rendered_state: Option<Page> = None;
+    let mut event_rx = event_rx;
+
+    loop {
+        let should_render = if state_rx.has_changed().unwrap_or(false) {
+            let state = state_rx.borrow_and_update().clone();
+            let changed = last_rendered_state.as_ref() != Some(&state);
+            if changed {
+                last_rendered_state = Some(state);
+            }
+            changed
+        } else {
+            false
+        };
+
+        if should_render {
+            terminal.draw(|f| render::render(f, &app))?;
+        }
+
+        match timeout(Duration::from_millis(16), event_rx.recv()).await {
+            Ok(Some(event)) => match event {
+                ReactiveAppEvent::KeyPress(key) => {
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && key.code == KeyCode::Char('c')
+                    {
+                        return Ok(());
+                    }
+                    app.handle_event(event).await?;
+                }
+                _ => {
+                    app.handle_event(event).await?;
+                }
+            },
+            Ok(None) => break,
+            Err(_) => {}
+        }
+
+        if app
+            .flash
+            .as_ref()
+            .is_some_and(|(_, expiry)| std::time::Instant::now() >= *expiry)
+        {
+            app.send_event(ReactiveAppEvent::ClearFlash)?;
+        }
     }
 
     Ok(())
