@@ -461,10 +461,11 @@ fn draw_ready_view(f: &mut Frame, area: Rect, nrc: &Nrc, groups: &[openmls::grou
         draw_input(f, right_chunks[2], nrc);
     } else {
         // No error - use standard layout
-        // Split right side for content and input (3 lines for input box)
+        // Split right side for content and input (3 lines for input box, 4 if flash message)
+        let input_height = if nrc.flash_message.is_some() { 4 } else { 3 };
         let right_chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(3)])
+            .constraints([Constraint::Min(0), Constraint::Length(input_height)])
             .split(chunks[1]);
 
         // Check if a chat is selected
@@ -819,7 +820,7 @@ fn draw_input_with_flash(f: &mut Frame, area: Rect, nrc: &Nrc) {
         // Split area for flash message and input
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Length(2)])
+            .constraints([Constraint::Length(1), Constraint::Length(3)])
             .split(area);
 
         let flash_text = Paragraph::new(flash.as_str())
