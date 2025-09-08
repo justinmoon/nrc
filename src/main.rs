@@ -1,6 +1,5 @@
 mod keyboard;
 mod tui;
-// mod network_task;  // TODO: Enable once storage can be shared
 
 use anyhow::Result;
 use clap::Parser;
