@@ -8,6 +8,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use nrc::network_task::{StorageCommand, StorageResponse};
 use nrc::{AppEvent, AppState, NetworkCommand, Nrc, OnboardingData, OnboardingMode};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::fs::{self, OpenOptions};
@@ -121,7 +122,11 @@ async fn run_app<B: ratatui::backend::Backend>(
     nrc: &mut Nrc,
 ) -> Result<()> {
     let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-    let (command_tx, _command_rx) = mpsc::channel(100);
+    let (command_tx, command_rx) = mpsc::channel(100);
+    let (storage_tx, mut storage_rx) = mpsc::channel::<(
+        StorageCommand,
+        tokio::sync::oneshot::Sender<StorageResponse>,
+    )>(100);
 
     // Store channels in Nrc
     nrc.event_tx = Some(event_tx.clone());
@@ -144,13 +149,25 @@ async fn run_app<B: ratatui::backend::Backend>(
         }
     });
 
-    // Note: We'll need to create network task differently since we can't clone storage
-    // For now, we'll handle network commands directly in the main loop
+    // Spawn network task with storage command channel
+    nrc::network_task::spawn_network_task(
+        command_rx,
+        storage_tx,
+        event_tx.clone(),
+        nrc.keys.clone(),
+    )
+    .await;
 
     // Main event loop - THE ONLY PLACE WHERE STATE CHANGES
     loop {
         // Draw UI
         terminal.draw(|f| tui::draw(f, nrc))?;
+
+        // Handle storage commands from network task
+        while let Ok((cmd, tx)) = storage_rx.try_recv() {
+            let response = nrc.handle_storage_command(cmd).await;
+            let _ = tx.send(response);
+        }
 
         // Process events with small timeout for refresh rate
         match timeout(Duration::from_millis(50), event_rx.recv()).await {

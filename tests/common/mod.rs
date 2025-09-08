@@ -1,10 +1,11 @@
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent};
 use nostr_sdk::prelude::*;
+use nrc::network_task::{StorageCommand, StorageResponse};
 use nrc::{AppEvent, Nrc};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex};
 
 /// Test client that wraps Nrc for testing
 pub struct TestClient {
@@ -39,6 +40,12 @@ impl TestClient {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         nrc.event_tx = Some(event_tx.clone());
 
+        // Create command channels for network task
+        let (command_tx, command_rx) = mpsc::channel(100);
+        let (storage_tx, mut storage_rx) =
+            mpsc::channel::<(StorageCommand, oneshot::Sender<StorageResponse>)>(100);
+        nrc.command_tx = Some(command_tx.clone());
+
         // Initialize through onboarding flow - but for tests, skip the UI flow
         // and directly call the initialization
         nrc.initialize_with_display_name(name.to_string()).await?;
@@ -46,8 +53,31 @@ impl TestClient {
         // Start notification handler for real-time message processing via subscriptions
         nrc::notification_handler::spawn_notification_handler(nrc.client.clone(), event_tx.clone());
 
+        // Spawn network task
+        let keys = nrc.keys.clone();
+        nrc::network_task::spawn_network_task(
+            command_rx,
+            storage_tx.clone(),
+            event_tx.clone(),
+            keys,
+        )
+        .await;
+
+        // Wrap nrc in Arc<Mutex> for sharing
+        let nrc = Arc::new(Mutex::new(nrc));
+
+        // Spawn storage command handler
+        let nrc_for_handler = nrc.clone();
+        tokio::spawn(async move {
+            while let Some((cmd, tx)) = storage_rx.recv().await {
+                let mut nrc_guard = nrc_for_handler.lock().await;
+                let response = nrc_guard.handle_storage_command(cmd).await;
+                let _ = tx.send(response);
+            }
+        });
+
         Ok(Self {
-            nrc: Arc::new(Mutex::new(nrc)),
+            nrc,
             temp_dir,
             event_tx,
             event_rx: Arc::new(Mutex::new(event_rx)),

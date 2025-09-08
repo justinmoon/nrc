@@ -13,6 +13,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 pub mod key_storage;
+pub mod network_task;
 pub mod notification_handler;
 /// Get default relay URLs - uses local relay for tests when TEST_USE_LOCAL_RELAY is set
 pub fn get_default_relays() -> &'static [&'static str] {
@@ -626,36 +627,125 @@ impl Nrc {
     }
 
     pub async fn send_message(&mut self, group_id: GroupId, content: String) -> Result<()> {
-        let group_id_clone = group_id.clone();
-        let content = &content;
-        let text_note_rumor = EventBuilder::text_note(content).build(self.keys.public_key());
-
-        let event = self
-            .storage
-            .create_message(&group_id_clone, text_note_rumor.clone())?;
-
-        // Note: merge_pending_commit is already called inside create_message
-
-        // Send message directly - retry logic can be added later if needed
-        log::debug!(
-            "Sending message event: id={}, kind={}",
-            event.id,
-            event.kind
-        );
-        self.client.send_event(&event).await?;
-
-        // Add our own message to local history immediately
-        // Since we're sending to ourselves, it won't come back from the relay
-        // TODO: In the future, we could implement proper deduplication to handle
-        // cases where our own messages might be received from relays
-        let message = Message {
-            content: content.clone(),
-            sender: self.keys.public_key(),
-            timestamp: text_note_rumor.created_at,
-        };
-        self.add_message(group_id, message);
-
+        // Send command to network task
+        if let Some(command_tx) = &self.command_tx {
+            command_tx
+                .send(NetworkCommand::SendMessage { group_id, content })
+                .await?;
+        } else {
+            return Err(anyhow::anyhow!("Network task not initialized"));
+        }
         Ok(())
+    }
+
+    pub async fn handle_storage_command(
+        &mut self,
+        command: network_task::StorageCommand,
+    ) -> network_task::StorageResponse {
+        use network_task::{StorageCommand, StorageResponse};
+
+        match command {
+            StorageCommand::CreateMessage { group_id, rumor } => {
+                match self.storage.create_message(&group_id, rumor) {
+                    Ok(event) => StorageResponse::MessageCreated(event),
+                    Err(e) => StorageResponse::Error(e.to_string()),
+                }
+            }
+            StorageCommand::GetGroup { group_id } => {
+                StorageResponse::Group(self.groups.get(&group_id).cloned())
+            }
+            StorageCommand::GetGroups => StorageResponse::Groups(self.groups.clone()),
+            StorageCommand::CreateGroup { name, keys } => {
+                let config = NostrGroupConfigData::new(
+                    name,
+                    "NRC Chat Group".to_string(),
+                    None,
+                    None,
+                    None,
+                    vec![RelayUrl::parse(get_default_relays()[0]).unwrap()],
+                    vec![keys.public_key()],
+                );
+
+                match self
+                    .storage
+                    .create_group(&keys.public_key(), vec![], config.clone())
+                {
+                    Ok(group_result) => {
+                        let group_id =
+                            GroupId::from_slice(group_result.group.mls_group_id.as_slice());
+
+                        // Store group in our local map
+                        self.groups
+                            .insert(group_id.clone(), group_result.group.clone());
+
+                        // Create welcome rumor if there is one
+                        let welcome_rumor = if let Some(rumor) = group_result.welcome_rumors.first()
+                        {
+                            rumor.clone()
+                        } else {
+                            // Create a dummy welcome rumor for solo groups
+                            EventBuilder::new(Kind::from(442u16), "solo_group")
+                                .build(keys.public_key())
+                        };
+
+                        StorageResponse::GroupCreated {
+                            group_id,
+                            welcome_rumor,
+                        }
+                    }
+                    Err(e) => StorageResponse::Error(e.to_string()),
+                }
+            }
+            StorageCommand::JoinGroupFromWelcome {
+                welcome_rumor: _,
+                keys: _,
+            } => {
+                // For now, just return an error since join_group is more complex
+                StorageResponse::Error(
+                    "Join group not yet implemented in storage handler".to_string(),
+                )
+            }
+            StorageCommand::MergeGroupConfig { config: _ } => {
+                // merge_group_config doesn't exist, return error for now
+                StorageResponse::Error("Merge group config not yet implemented".to_string())
+            }
+            StorageCommand::GetKeyPackage { keys } => {
+                // Create the key package event
+                let relays: Result<Vec<RelayUrl>, _> = get_default_relays()
+                    .iter()
+                    .map(|&url| RelayUrl::parse(url))
+                    .collect();
+
+                match relays {
+                    Ok(relay_urls) => {
+                        match self
+                            .storage
+                            .create_key_package_for_event(&keys.public_key(), relay_urls)
+                        {
+                            Ok((key_package_content, tags)) => {
+                                match EventBuilder::new(Kind::from(443u16), key_package_content)
+                                    .tags(tags)
+                                    .build(keys.public_key())
+                                    .sign(&keys)
+                                    .await
+                                {
+                                    Ok(event) => StorageResponse::KeyPackage(event),
+                                    Err(e) => StorageResponse::Error(e.to_string()),
+                                }
+                            }
+                            Err(e) => StorageResponse::Error(e.to_string()),
+                        }
+                    }
+                    Err(e) => StorageResponse::Error(e.to_string()),
+                }
+            }
+            StorageCommand::ProcessMessageEvent { event } => {
+                match self.process_message_event(event).await {
+                    Ok(()) => StorageResponse::MessageProcessed(None),
+                    Err(e) => StorageResponse::Error(e.to_string()),
+                }
+            }
+        }
     }
 
     pub async fn fetch_and_process_messages(&mut self) -> Result<()> {
