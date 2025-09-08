@@ -12,6 +12,8 @@ use std::str::FromStr;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
+pub mod actions;
+pub mod evented_nrc;
 pub mod key_storage;
 pub mod notification_handler;
 /// Get default relay URLs - uses local relay for tests when TEST_USE_LOCAL_RELAY is set
@@ -99,7 +101,7 @@ pub enum AppState {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum OnboardingMode {
     Choose,
     GenerateNew,
