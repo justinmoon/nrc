@@ -504,6 +504,16 @@ fn draw_messages(f: &mut Frame, area: Rect, nrc: &Nrc, active_group: &openmls::g
 
     let messages = nrc.get_messages(active_group);
 
+    // Check if this is a multi-user group
+    let is_multi_user_group = nrc
+        .groups
+        .get(active_group)
+        .map(|group| {
+            // Check if group name indicates it's a multi-user group
+            !group.name.starts_with("Test") && !group.name.is_empty()
+        })
+        .unwrap_or(false);
+
     let content: Vec<Line> = if messages.is_empty() {
         vec![Line::from(Span::styled(
             "No messages yet. Start the conversation!",
@@ -513,19 +523,23 @@ fn draw_messages(f: &mut Frame, area: Rect, nrc: &Nrc, active_group: &openmls::g
         messages
             .iter()
             .map(|msg| {
-                // Get the display name for the sender
-                let sender_name = nrc.get_display_name_for_pubkey(&msg.sender);
-                // Use different colors for different users
-                // Current user gets green, others get cyan
-                let color = if msg.sender == nrc.public_key() {
-                    Color::Green
+                if is_multi_user_group {
+                    // Multi-user group: Always show sender name
+                    let sender_name = nrc.get_display_name_for_pubkey(&msg.sender);
+                    let color = if msg.sender == nrc.public_key() {
+                        Color::Green
+                    } else {
+                        Color::Cyan
+                    };
+                    Line::from(vec![
+                        Span::styled(format!("<{sender_name}>"), Style::default().fg(color)),
+                        Span::raw(" "),
+                        Span::raw(&msg.content),
+                    ])
                 } else {
-                    Color::Cyan
-                };
-                Line::from(vec![
-                    Span::styled(format!("{sender_name}: "), Style::default().fg(color)),
-                    Span::raw(&msg.content),
-                ])
+                    // Direct message: Show without sender name (old behavior)
+                    Line::from(vec![Span::raw(&msg.content)])
+                }
             })
             .collect()
     };
@@ -589,20 +603,32 @@ fn draw_info_panel(f: &mut Frame, area: Rect, nrc: &Nrc) {
         )]),
         Line::from(""),
         Line::from(vec![
+            Span::styled("/create #name <npub1> [npub2]... (/c) ", Style::default().fg(Color::Green)),
+            Span::raw("Create group"),
+        ]),
+        Line::from(vec![
             Span::styled("/join <npub> (/j) ", Style::default().fg(Color::Green)),
-            Span::raw("Start chat"),
+            Span::raw("Start DM"),
+        ]),
+        Line::from(vec![
+            Span::styled("/invite <npub> (/i) ", Style::default().fg(Color::Yellow)),
+            Span::raw("Add to group"),
+        ]),
+        Line::from(vec![
+            Span::styled("/members (/m) ", Style::default().fg(Color::Cyan)),
+            Span::raw("List members"),
+        ]),
+        Line::from(vec![
+            Span::styled("/leave (/l) ", Style::default().fg(Color::Yellow)),
+            Span::raw("Leave group"),
         ]),
         Line::from(vec![
             Span::styled("/npub (/n) ", Style::default().fg(Color::Cyan)),
-            Span::raw("Copy to clipboard"),
+            Span::raw("Copy npub"),
         ]),
         Line::from(vec![
             Span::styled("/help (/h) ", Style::default().fg(Color::Cyan)),
             Span::raw("Show help"),
-        ]),
-        Line::from(vec![
-            Span::styled("↑↓ or Ctrl+j/k ", Style::default().fg(Color::DarkGray)),
-            Span::raw("Navigate chats"),
         ]),
         Line::from(vec![
             Span::styled("/quit (/q) ", Style::default().fg(Color::Red)),
@@ -641,9 +667,29 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
         )]),
         Line::from(""),
         Line::from(vec![
+            Span::styled("/create #name <npub1> [npub2]... ", Style::default().fg(Color::Green)),
+            Span::styled("(/c)", Style::default().fg(Color::DarkGray)),
+            Span::raw(" - Create a multi-user group"),
+        ]),
+        Line::from(vec![
             Span::styled("/join <npub> ", Style::default().fg(Color::Green)),
             Span::styled("(/j)", Style::default().fg(Color::DarkGray)),
-            Span::raw(" - Start a new chat with someone"),
+            Span::raw(" - Start a DM with someone"),
+        ]),
+        Line::from(vec![
+            Span::styled("/invite <npub> ", Style::default().fg(Color::Yellow)),
+            Span::styled("(/i)", Style::default().fg(Color::DarkGray)),
+            Span::raw(" - Add member to current group"),
+        ]),
+        Line::from(vec![
+            Span::styled("/members ", Style::default().fg(Color::Cyan)),
+            Span::styled("(/m)", Style::default().fg(Color::DarkGray)),
+            Span::raw(" - List group members"),
+        ]),
+        Line::from(vec![
+            Span::styled("/leave ", Style::default().fg(Color::Yellow)),
+            Span::styled("(/l)", Style::default().fg(Color::DarkGray)),
+            Span::raw(" - Leave current group"),
         ]),
         Line::from(vec![
             Span::styled("/npub ", Style::default().fg(Color::Cyan)),
