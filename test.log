@@ -1,0 +1,315 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running tests/evented_integration_test.rs (target/debug/deps/evented_integration_test-8990213ae369212e)
+
+running 1 test
+🧪 Creating Alice and Bob test clients...
+[2025-09-08T16:26:57Z INFO  nrc] Using SQLite storage at: "/var/folders/19/h_y32l8s1lxfrpxctd1673p00000gn/T/evented_test_Alice_2230288733/nrc.db"
+[2025-09-08T16:26:57Z INFO  refinery_core::traits] schema history table is empty, going to apply all migrations
+[2025-09-08T16:26:57Z INFO  refinery_core::traits::sync] applying migration: V1__initial
+[2025-09-08T16:26:57Z INFO  refinery_core::traits::sync] preparing to apply 1 migrations: Map {
+        iter: Iter(
+            [
+                Migration {
+                    state: Applied,
+                    name: "initial",
+                    checksum: 5121145794404019609,
+                    version: 1,
+                    prefix: Versioned,
+                    sql: Some(
+                        "CREATE TABLE IF NOT EXISTS openmls_encryption_keys (\n    provider_version INTEGER NOT NULL,\n    public_key BLOB PRIMARY KEY,\n    key_pair BLOB NOT NULL\n);\n\nCREATE TABLE IF NOT EXISTS openmls_epoch_keys_pairs (\n    provider_version INTEGER NOT NULL,\n    group_id BLOB NOT NULL,\n    epoch_id BLOB NOT NULL,\n    leaf_index INTEGER NOT NULL,\n    key_pairs BLOB NOT NULL,\n    PRIMARY KEY (group_id, epoch_id, leaf_index)\n);      \n\nCREATE TABLE IF NOT EXISTS openmls_group_data (\n    provider_version INTEGER NOT NULL,\n    group_id BLOB NOT NULL,\n    data_type TEXT NOT NULL CHECK (data_type IN (\n        'join_group_config', \n        'tree', \n        'interim_transcript_hash',\n        'context', \n        'confirmation_tag', \n        'group_state', \n        'message_secrets', \n        'resumption_psk_store',\n        'own_leaf_index',\n        'use_ratchet_tree_extension',\n        'group_epoch_secrets'\n    )),\n    group_data BLOB NOT NULL,\n    PRIMARY KEY (group_id, data_type)\n);\n        \nCREATE TABLE IF NOT EXISTS openmls_key_packages (\n    provider_version INTEGER NOT NULL,\n    key_package_ref BLOB PRIMARY KEY,\n    key_package BLOB NOT NULL\n);\n\nCREATE TABLE IF NOT EXISTS openmls_own_leaf_nodes (\n    provider_version INTEGER NOT NULL,\n    id INTEGER PRIMARY KEY AUTOINCREMENT,\n    group_id BLOB NOT NULL,\n    leaf_node BLOB NOT NULL\n);\n\nCREATE TABLE IF NOT EXISTS openmls_proposals (\n    provider_version INTEGER NOT NULL,\n    group_id BLOB NOT NULL,\n    proposal_ref BLOB NOT NULL,\n    proposal BLOB NOT NULL,\n    PRIMARY KEY (group_id, proposal_ref)\n);\n\nCREATE TABLE IF NOT EXISTS openmls_psks (\n    provider_version INTEGER NOT NULL,\n    psk_id BLOB PRIMARY KEY,\n    psk_bundle BLOB NOT NULL\n);\n\nCREATE TABLE IF NOT EXISTS openmls_signature_keys (\n    provider_version INTEGER NOT NULL,\n    public_key BLOB PRIMARY KEY,\n    signature_key BLOB NOT NULL\n);\n",
+                    ),
+                    applied_on: Some(
+                        2025-09-08 16:26:57.858287 +00:00:00,
+                    ),
+                },
+            ],
+        ),
+    }
+[2025-09-08T16:26:57Z INFO  refinery_core::traits] schema history table is empty, going to apply all migrations
+[2025-09-08T16:26:57Z INFO  refinery_core::traits::sync] applying migration: V100__initial
+[2025-09-08T16:26:57Z INFO  refinery_core::traits::sync] applying migration: V101__add_group_image_fields
+[2025-09-08T16:26:57Z INFO  refinery_core::traits::sync] applying migration: V102__remove_group_type_from_groups
+[2025-09-08T16:26:57Z INFO  refinery_core::traits::sync] applying migration: V103__add_group_image_nonce
+[2025-09-08T16:26:57Z INFO  refinery_core::traits::sync] preparing to apply 4 migrations: Map {
+        iter: Iter(
+            [
+                Migration {
+                    state: Applied,
+                    name: "initial",
+                    checksum: 1938375114734490632,
+                    version: 100,
+                    prefix: Versioned,
+                    sql: Some(
+                        "-- Initial database schema for nostr-mls-sqlite-storage\n\n-- Groups table\nCREATE TABLE IF NOT EXISTS groups (\n    mls_group_id BLOB PRIMARY KEY,\n    nostr_group_id TEXT NOT NULL,\n    name TEXT NOT NULL,\n    description TEXT NOT NULL,\n    admin_pubkeys JSONB NOT NULL,\n    last_message_id BLOB, -- Event ID as byte array\n    last_message_at INTEGER,\n    group_type TEXT NOT NULL,\n    epoch INTEGER NOT NULL,\n    state TEXT NOT NULL\n);\n\n-- Create unique index on nostr_group_id\nCREATE UNIQUE INDEX IF NOT EXISTS idx_groups_nostr_group_id ON groups(nostr_group_id);\n\n-- Group Relays table\nCREATE TABLE IF NOT EXISTS group_relays (\n    id INTEGER PRIMARY KEY AUTOINCREMENT,\n    mls_group_id BLOB NOT NULL,\n    relay_url TEXT NOT NULL,\n    FOREIGN KEY (mls_group_id) REFERENCES groups(mls_group_id) ON DELETE CASCADE,\n    UNIQUE(mls_group_id, relay_url)\n);\n\n-- Create index on mls_group_id for faster lookups\nCREATE INDEX IF NOT EXISTS idx_group_relays_mls_group_id ON group_relays(mls_group_id);\n\n-- Group Exporter Secrets table\nCREATE TABLE IF NOT EXISTS group_exporter_secrets (\n    mls_group_id BLOB NOT NULL,\n    epoch INTEGER NOT NULL,\n    secret BLOB NOT NULL,\n    PRIMARY KEY (mls_group_id, epoch)\n);\n\n-- Create index on mls_group_id for faster lookups\nCREATE INDEX IF NOT EXISTS idx_group_exporter_secrets_mls_group_id ON group_exporter_secrets(mls_group_id);\n\n-- Messages table\nCREATE TABLE IF NOT EXISTS messages (\n    id BLOB PRIMARY KEY,  -- Event ID as byte array\n    pubkey BLOB NOT NULL, -- Pubkey as byte array\n    kind INTEGER NOT NULL,\n    mls_group_id BLOB NOT NULL,\n    created_at INTEGER NOT NULL,\n    content TEXT NOT NULL,\n    tags JSONB NOT NULL,\n    event JSONB NOT NULL,\n    wrapper_event_id BLOB NOT NULL, -- Wrapper event ID as byte array\n    state TEXT NOT NULL,\n    FOREIGN KEY (mls_group_id) REFERENCES groups(mls_group_id) ON DELETE CASCADE\n);\n\n-- Create indexes on messages table\nCREATE INDEX IF NOT EXISTS idx_messages_mls_group_id ON messages(mls_group_id);\nCREATE INDEX IF NOT EXISTS idx_messages_wrapper_event_id ON messages(wrapper_event_id);\nCREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at);\nCREATE INDEX IF NOT EXISTS idx_messages_pubkey ON messages(pubkey);\nCREATE INDEX IF NOT EXISTS idx_messages_kind ON messages(kind);\nCREATE INDEX IF NOT EXISTS idx_messages_state ON messages(state);\n\n-- Processed Messages table\nCREATE TABLE IF NOT EXISTS processed_messages (\n    wrapper_event_id BLOB PRIMARY KEY, -- Wrapper event ID as byte array\n    message_event_id BLOB, -- Message event ID as byte array\n    processed_at INTEGER NOT NULL,\n    state TEXT NOT NULL,\n    failure_reason TEXT\n);\n\n-- Create index on message_event_id for faster lookups\nCREATE INDEX IF NOT EXISTS idx_processed_messages_message_event_id ON processed_messages(message_event_id);\nCREATE INDEX IF NOT EXISTS idx_processed_messages_state ON processed_messages(state);\nCREATE INDEX IF NOT EXISTS idx_processed_messages_processed_at ON processed_messages(processed_at);\nCREATE INDEX IF NOT EXISTS idx_processed_messages_wrapper_event_id ON processed_messages(wrapper_event_id);\n\n-- Welcome messages table\nCREATE TABLE IF NOT EXISTS welcomes (\n    id BLOB PRIMARY KEY,  -- Event ID as byte array\n    event JSONB NOT NULL,\n    mls_group_id BLOB NOT NULL,\n    nostr_group_id TEXT NOT NULL,\n    group_name TEXT NOT NULL,\n    group_description TEXT NOT NULL,\n    group_admin_pubkeys JSONB NOT NULL,\n    group_relays JSONB NOT NULL,\n    welcomer BLOB NOT NULL,  -- pubkey as byte array\n    member_count INTEGER NOT NULL,\n    state TEXT NOT NULL,\n    wrapper_event_id BLOB NOT NULL, -- Wrapper event ID as byte array\n    FOREIGN KEY (mls_group_id) REFERENCES groups(mls_group_id) ON DELETE CASCADE\n);\n\n-- Create indexes on welcomes table\nCREATE INDEX IF NOT EXISTS idx_welcomes_mls_group_id ON welcomes(mls_group_id);\nCREATE INDEX IF NOT EXISTS idx_welcomes_wrapper_event_id ON welcomes(wrapper_event_id);\nCREATE INDEX IF NOT EXISTS idx_welcomes_state ON welcomes(state);\nCREATE INDEX IF NOT EXISTS idx_welcomes_nostr_group_id ON welcomes(nostr_group_id);\n\n-- Processed Welcome messages table\nCREATE TABLE IF NOT EXISTS processed_welcomes (\n    wrapper_event_id BLOB PRIMARY KEY, -- Wrapper event ID as byte array\n    welcome_event_id BLOB, -- Welcome event ID as byte array\n    processed_at INTEGER NOT NULL,\n    state TEXT NOT NULL,\n    failure_reason TEXT\n);\n\n-- Create index on welcome_event_id for faster lookups\nCREATE INDEX IF NOT EXISTS idx_processed_welcomes_welcome_event_id ON processed_welcomes(welcome_event_id);\nCREATE INDEX IF NOT EXISTS idx_processed_welcomes_state ON processed_welcomes(state);\nCREATE INDEX IF NOT EXISTS idx_processed_welcomes_processed_at ON processed_welcomes(processed_at);\nCREATE INDEX IF NOT EXISTS idx_processed_welcomes_wrapper_event_id ON processed_welcomes(wrapper_event_id);\n",
+                    ),
+                    applied_on: Some(
+                        2025-09-08 16:26:57.860654 +00:00:00,
+                    ),
+                },
+                Migration {
+                    state: Applied,
+                    name: "add_group_image_fields",
+                    checksum: 1896670748740325553,
+                    version: 101,
+                    prefix: Versioned,
+                    sql: Some(
+                        "-- Add image_url and image_key to groups table\nALTER TABLE groups ADD COLUMN image_url TEXT;\nALTER TABLE groups ADD COLUMN image_key BLOB;\n\n-- Add group_image_url and image_key to welcomes table\nALTER TABLE welcomes ADD COLUMN group_image_url TEXT;\nALTER TABLE welcomes ADD COLUMN group_image_key BLOB;\n",
+                    ),
+                    applied_on: Some(
+                        2025-09-08 16:26:57.860682 +00:00:00,
+                    ),
+                },
+                Migration {
+                    state: Applied,
+                    name: "remove_group_type_from_groups",
+                    checksum: 15889713088717530588,
+                    version: 102,
+                    prefix: Versioned,
+                    sql: Some(
+                        "-- Remove group_type from groups table\nALTER TABLE groups DROP COLUMN group_type;\n",
+                    ),
+                    applied_on: Some(
+                        2025-09-08 16:26:57.860707 +00:00:00,
+                    ),
+                },
+                Migration {
+                    state: Applied,
+                    name: "add_group_image_nonce",
+                    checksum: 1825244153268414860,
+                    version: 103,
+                    prefix: Versioned,
+                    sql: Some(
+                        "-- Add image_nonce to groups table\nALTER TABLE groups ADD COLUMN image_nonce BLOB;\n\n-- Add image_nonce to welcomes table\nALTER TABLE welcomes ADD COLUMN group_image_nonce BLOB;",
+                    ),
+                    applied_on: Some(
+                        2025-09-08 16:26:57.860731 +00:00:00,
+                    ),
+                },
+            ],
+        ),
+    }
+[2025-09-08T16:26:59Z INFO  nrc] Using SQLite storage at: "/var/folders/19/h_y32l8s1lxfrpxctd1673p00000gn/T/evented_test_Bob_1713486068/nrc.db"
+[2025-09-08T16:26:59Z INFO  refinery_core::traits] schema history table is empty, going to apply all migrations
+[2025-09-08T16:26:59Z INFO  refinery_core::traits::sync] applying migration: V1__initial
+[2025-09-08T16:26:59Z INFO  refinery_core::traits::sync] preparing to apply 1 migrations: Map {
+        iter: Iter(
+            [
+                Migration {
+                    state: Applied,
+                    name: "initial",
+                    checksum: 5121145794404019609,
+                    version: 1,
+                    prefix: Versioned,
+                    sql: Some(
+                        "CREATE TABLE IF NOT EXISTS openmls_encryption_keys (\n    provider_version INTEGER NOT NULL,\n    public_key BLOB PRIMARY KEY,\n    key_pair BLOB NOT NULL\n);\n\nCREATE TABLE IF NOT EXISTS openmls_epoch_keys_pairs (\n    provider_version INTEGER NOT NULL,\n    group_id BLOB NOT NULL,\n    epoch_id BLOB NOT NULL,\n    leaf_index INTEGER NOT NULL,\n    key_pairs BLOB NOT NULL,\n    PRIMARY KEY (group_id, epoch_id, leaf_index)\n);      \n\nCREATE TABLE IF NOT EXISTS openmls_group_data (\n    provider_version INTEGER NOT NULL,\n    group_id BLOB NOT NULL,\n    data_type TEXT NOT NULL CHECK (data_type IN (\n        'join_group_config', \n        'tree', \n        'interim_transcript_hash',\n        'context', \n        'confirmation_tag', \n        'group_state', \n        'message_secrets', \n        'resumption_psk_store',\n        'own_leaf_index',\n        'use_ratchet_tree_extension',\n        'group_epoch_secrets'\n    )),\n    group_data BLOB NOT NULL,\n    PRIMARY KEY (group_id, data_type)\n);\n        \nCREATE TABLE IF NOT EXISTS openmls_key_packages (\n    provider_version INTEGER NOT NULL,\n    key_package_ref BLOB PRIMARY KEY,\n    key_package BLOB NOT NULL\n);\n\nCREATE TABLE IF NOT EXISTS openmls_own_leaf_nodes (\n    provider_version INTEGER NOT NULL,\n    id INTEGER PRIMARY KEY AUTOINCREMENT,\n    group_id BLOB NOT NULL,\n    leaf_node BLOB NOT NULL\n);\n\nCREATE TABLE IF NOT EXISTS openmls_proposals (\n    provider_version INTEGER NOT NULL,\n    group_id BLOB NOT NULL,\n    proposal_ref BLOB NOT NULL,\n    proposal BLOB NOT NULL,\n    PRIMARY KEY (group_id, proposal_ref)\n);\n\nCREATE TABLE IF NOT EXISTS openmls_psks (\n    provider_version INTEGER NOT NULL,\n    psk_id BLOB PRIMARY KEY,\n    psk_bundle BLOB NOT NULL\n);\n\nCREATE TABLE IF NOT EXISTS openmls_signature_keys (\n    provider_version INTEGER NOT NULL,\n    public_key BLOB PRIMARY KEY,\n    signature_key BLOB NOT NULL\n);\n",
+                    ),
+                    applied_on: Some(
+                        2025-09-08 16:26:59.873339 +00:00:00,
+                    ),
+                },
+            ],
+        ),
+    }
+[2025-09-08T16:26:59Z INFO  refinery_core::traits] schema history table is empty, going to apply all migrations
+[2025-09-08T16:26:59Z INFO  refinery_core::traits::sync] applying migration: V100__initial
+[2025-09-08T16:26:59Z INFO  refinery_core::traits::sync] applying migration: V101__add_group_image_fields
+[2025-09-08T16:26:59Z INFO  refinery_core::traits::sync] applying migration: V102__remove_group_type_from_groups
+[2025-09-08T16:26:59Z INFO  refinery_core::traits::sync] applying migration: V103__add_group_image_nonce
+[2025-09-08T16:26:59Z INFO  refinery_core::traits::sync] preparing to apply 4 migrations: Map {
+        iter: Iter(
+            [
+                Migration {
+                    state: Applied,
+                    name: "initial",
+                    checksum: 1938375114734490632,
+                    version: 100,
+                    prefix: Versioned,
+                    sql: Some(
+                        "-- Initial database schema for nostr-mls-sqlite-storage\n\n-- Groups table\nCREATE TABLE IF NOT EXISTS groups (\n    mls_group_id BLOB PRIMARY KEY,\n    nostr_group_id TEXT NOT NULL,\n    name TEXT NOT NULL,\n    description TEXT NOT NULL,\n    admin_pubkeys JSONB NOT NULL,\n    last_message_id BLOB, -- Event ID as byte array\n    last_message_at INTEGER,\n    group_type TEXT NOT NULL,\n    epoch INTEGER NOT NULL,\n    state TEXT NOT NULL\n);\n\n-- Create unique index on nostr_group_id\nCREATE UNIQUE INDEX IF NOT EXISTS idx_groups_nostr_group_id ON groups(nostr_group_id);\n\n-- Group Relays table\nCREATE TABLE IF NOT EXISTS group_relays (\n    id INTEGER PRIMARY KEY AUTOINCREMENT,\n    mls_group_id BLOB NOT NULL,\n    relay_url TEXT NOT NULL,\n    FOREIGN KEY (mls_group_id) REFERENCES groups(mls_group_id) ON DELETE CASCADE,\n    UNIQUE(mls_group_id, relay_url)\n);\n\n-- Create index on mls_group_id for faster lookups\nCREATE INDEX IF NOT EXISTS idx_group_relays_mls_group_id ON group_relays(mls_group_id);\n\n-- Group Exporter Secrets table\nCREATE TABLE IF NOT EXISTS group_exporter_secrets (\n    mls_group_id BLOB NOT NULL,\n    epoch INTEGER NOT NULL,\n    secret BLOB NOT NULL,\n    PRIMARY KEY (mls_group_id, epoch)\n);\n\n-- Create index on mls_group_id for faster lookups\nCREATE INDEX IF NOT EXISTS idx_group_exporter_secrets_mls_group_id ON group_exporter_secrets(mls_group_id);\n\n-- Messages table\nCREATE TABLE IF NOT EXISTS messages (\n    id BLOB PRIMARY KEY,  -- Event ID as byte array\n    pubkey BLOB NOT NULL, -- Pubkey as byte array\n    kind INTEGER NOT NULL,\n    mls_group_id BLOB NOT NULL,\n    created_at INTEGER NOT NULL,\n    content TEXT NOT NULL,\n    tags JSONB NOT NULL,\n    event JSONB NOT NULL,\n    wrapper_event_id BLOB NOT NULL, -- Wrapper event ID as byte array\n    state TEXT NOT NULL,\n    FOREIGN KEY (mls_group_id) REFERENCES groups(mls_group_id) ON DELETE CASCADE\n);\n\n-- Create indexes on messages table\nCREATE INDEX IF NOT EXISTS idx_messages_mls_group_id ON messages(mls_group_id);\nCREATE INDEX IF NOT EXISTS idx_messages_wrapper_event_id ON messages(wrapper_event_id);\nCREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at);\nCREATE INDEX IF NOT EXISTS idx_messages_pubkey ON messages(pubkey);\nCREATE INDEX IF NOT EXISTS idx_messages_kind ON messages(kind);\nCREATE INDEX IF NOT EXISTS idx_messages_state ON messages(state);\n\n-- Processed Messages table\nCREATE TABLE IF NOT EXISTS processed_messages (\n    wrapper_event_id BLOB PRIMARY KEY, -- Wrapper event ID as byte array\n    message_event_id BLOB, -- Message event ID as byte array\n    processed_at INTEGER NOT NULL,\n    state TEXT NOT NULL,\n    failure_reason TEXT\n);\n\n-- Create index on message_event_id for faster lookups\nCREATE INDEX IF NOT EXISTS idx_processed_messages_message_event_id ON processed_messages(message_event_id);\nCREATE INDEX IF NOT EXISTS idx_processed_messages_state ON processed_messages(state);\nCREATE INDEX IF NOT EXISTS idx_processed_messages_processed_at ON processed_messages(processed_at);\nCREATE INDEX IF NOT EXISTS idx_processed_messages_wrapper_event_id ON processed_messages(wrapper_event_id);\n\n-- Welcome messages table\nCREATE TABLE IF NOT EXISTS welcomes (\n    id BLOB PRIMARY KEY,  -- Event ID as byte array\n    event JSONB NOT NULL,\n    mls_group_id BLOB NOT NULL,\n    nostr_group_id TEXT NOT NULL,\n    group_name TEXT NOT NULL,\n    group_description TEXT NOT NULL,\n    group_admin_pubkeys JSONB NOT NULL,\n    group_relays JSONB NOT NULL,\n    welcomer BLOB NOT NULL,  -- pubkey as byte array\n    member_count INTEGER NOT NULL,\n    state TEXT NOT NULL,\n    wrapper_event_id BLOB NOT NULL, -- Wrapper event ID as byte array\n    FOREIGN KEY (mls_group_id) REFERENCES groups(mls_group_id) ON DELETE CASCADE\n);\n\n-- Create indexes on welcomes table\nCREATE INDEX IF NOT EXISTS idx_welcomes_mls_group_id ON welcomes(mls_group_id);\nCREATE INDEX IF NOT EXISTS idx_welcomes_wrapper_event_id ON welcomes(wrapper_event_id);\nCREATE INDEX IF NOT EXISTS idx_welcomes_state ON welcomes(state);\nCREATE INDEX IF NOT EXISTS idx_welcomes_nostr_group_id ON welcomes(nostr_group_id);\n\n-- Processed Welcome messages table\nCREATE TABLE IF NOT EXISTS processed_welcomes (\n    wrapper_event_id BLOB PRIMARY KEY, -- Wrapper event ID as byte array\n    welcome_event_id BLOB, -- Welcome event ID as byte array\n    processed_at INTEGER NOT NULL,\n    state TEXT NOT NULL,\n    failure_reason TEXT\n);\n\n-- Create index on welcome_event_id for faster lookups\nCREATE INDEX IF NOT EXISTS idx_processed_welcomes_welcome_event_id ON processed_welcomes(welcome_event_id);\nCREATE INDEX IF NOT EXISTS idx_processed_welcomes_state ON processed_welcomes(state);\nCREATE INDEX IF NOT EXISTS idx_processed_welcomes_processed_at ON processed_welcomes(processed_at);\nCREATE INDEX IF NOT EXISTS idx_processed_welcomes_wrapper_event_id ON processed_welcomes(wrapper_event_id);\n",
+                    ),
+                    applied_on: Some(
+                        2025-09-08 16:26:59.875755 +00:00:00,
+                    ),
+                },
+                Migration {
+                    state: Applied,
+                    name: "add_group_image_fields",
+                    checksum: 1896670748740325553,
+                    version: 101,
+                    prefix: Versioned,
+                    sql: Some(
+                        "-- Add image_url and image_key to groups table\nALTER TABLE groups ADD COLUMN image_url TEXT;\nALTER TABLE groups ADD COLUMN image_key BLOB;\n\n-- Add group_image_url and image_key to welcomes table\nALTER TABLE welcomes ADD COLUMN group_image_url TEXT;\nALTER TABLE welcomes ADD COLUMN group_image_key BLOB;\n",
+                    ),
+                    applied_on: Some(
+                        2025-09-08 16:26:59.875781 +00:00:00,
+                    ),
+                },
+                Migration {
+                    state: Applied,
+                    name: "remove_group_type_from_groups",
+                    checksum: 15889713088717530588,
+                    version: 102,
+                    prefix: Versioned,
+                    sql: Some(
+                        "-- Remove group_type from groups table\nALTER TABLE groups DROP COLUMN group_type;\n",
+                    ),
+                    applied_on: Some(
+                        2025-09-08 16:26:59.875806 +00:00:00,
+                    ),
+                },
+                Migration {
+                    state: Applied,
+                    name: "add_group_image_nonce",
+                    checksum: 1825244153268414860,
+                    version: 103,
+                    prefix: Versioned,
+                    sql: Some(
+                        "-- Add image_nonce to groups table\nALTER TABLE groups ADD COLUMN image_nonce BLOB;\n\n-- Add image_nonce to welcomes table\nALTER TABLE welcomes ADD COLUMN group_image_nonce BLOB;",
+                    ),
+                    applied_on: Some(
+                        2025-09-08 16:26:59.875828 +00:00:00,
+                    ),
+                },
+            ],
+        ),
+    }
+✅ Clients created
+🔄 Starting Alice's onboarding...
+🔄 Waiting for initial onboarding state...
+✅ Initial state reached, choosing GenerateNew...
+🔄 Alice waiting for background processing...
+✅ Alice processing wait complete
+🔄 Waiting for EnterDisplayName mode...
+✅ EnterDisplayName mode reached, setting display name...
+🔄 Alice waiting for background processing...
+✅ Alice processing wait complete
+🔄 Waiting for CreatePassword mode...
+✅ CreatePassword mode reached, setting password...
+🔄 Alice waiting for background processing...
+[2025-09-08T16:27:00Z INFO  nrc] 🚀 Starting initialization for new user: Alice
+✅ Alice processing wait complete
+🔄 Waiting for Ready state...
+🔄 Alice waiting for background processing...
+✅ Alice processing wait complete
+🔄 Alice waiting for background processing...
+✅ Alice processing wait complete
+🔄 Alice waiting for background processing...
+✅ Alice processing wait complete
+🔄 Alice waiting for background processing...
+✅ Alice processing wait complete
+🔄 Alice waiting for background processing...
+✅ Alice processing wait complete
+🔄 Alice waiting for background processing...
+✅ Alice processing wait complete
+🔄 Alice waiting for background processing...
+✅ Alice processing wait complete
+🔄 Alice waiting for background processing...
+✅ Alice processing wait complete
+🔄 Alice waiting for background processing...
+✅ Alice processing wait complete
+🔄 Alice waiting for background processing...
+[2025-09-08T16:27:07Z INFO  nrc::key_storage] Keys saved to database for npub: npub1e50nhd2cydg75mglmjj8atrhjnz769dk3xuf2xta0ual9psqau2sda7uwa
+[2025-09-08T16:27:07Z INFO  nrc] ✅ Keys saved for npub1e50nhd2cydg75mglmjj8atrhjnz769dk3xuf2xta0ual9psqau2sda7uwa
+[2025-09-08T16:27:07Z INFO  nrc] Published profile with display name: Alice
+[2025-09-08T16:27:07Z INFO  nrc] 📦 Publishing key package for npub1e50nhd2cydg75mglmjj8atrhjnz769dk3xuf2xta0ual9psqau2sda7uwa
+✅ Alice processing wait complete
+🔄 Alice waiting for background processing...
+[2025-09-08T16:27:07Z INFO  nrc] 📦 Key package event sent: b2868efbf9a5ce3e792a842d375f4b331d35cb694d6b12a812f48bee704d0b67
+✅ Alice processing wait complete
+🔄 Alice waiting for background processing...
+[2025-09-08T16:27:08Z INFO  nrc] ✅ Initialization complete, state: Ready { key_package_published: true, groups: [] }
+✅ Alice processing wait complete
+✅ Ready state reached!
+✅ Alice completed onboarding
+📋 Alice NPub: npub1e50nhd2cydg75mglmjj8atrhjnz769dk3xuf2xta0ual9psqau2sda7uwa
+🔄 Starting Bob's onboarding...
+🔄 Waiting for initial onboarding state...
+✅ Initial state reached, choosing GenerateNew...
+🔄 Bob waiting for background processing...
+✅ Bob processing wait complete
+🔄 Waiting for EnterDisplayName mode...
+✅ EnterDisplayName mode reached, setting display name...
+🔄 Bob waiting for background processing...
+✅ Bob processing wait complete
+🔄 Waiting for CreatePassword mode...
+✅ CreatePassword mode reached, setting password...
+🔄 Bob waiting for background processing...
+[2025-09-08T16:27:09Z INFO  nrc] 🚀 Starting initialization for new user: Bob
+✅ Bob processing wait complete
+🔄 Waiting for Ready state...
+🔄 Bob waiting for background processing...
+✅ Bob processing wait complete
+🔄 Bob waiting for background processing...
+✅ Bob processing wait complete
+🔄 Bob waiting for background processing...
+✅ Bob processing wait complete
+🔄 Bob waiting for background processing...
+✅ Bob processing wait complete
+🔄 Bob waiting for background processing...
+✅ Bob processing wait complete
+🔄 Bob waiting for background processing...
+✅ Bob processing wait complete
+🔄 Bob waiting for background processing...
+✅ Bob processing wait complete
+🔄 Bob waiting for background processing...
+✅ Bob processing wait complete
+🔄 Bob waiting for background processing...
+✅ Bob processing wait complete
+🔄 Bob waiting for background processing...
+[2025-09-08T16:27:15Z INFO  nrc::key_storage] Keys saved to database for npub: npub1qexws9kdqrfsngxttpqrkgxgpcusht68ktclpf5zcang6x98kg7qwrcmws
+[2025-09-08T16:27:15Z INFO  nrc] ✅ Keys saved for npub1qexws9kdqrfsngxttpqrkgxgpcusht68ktclpf5zcang6x98kg7qwrcmws
+✅ Bob processing wait complete
+[2025-09-08T16:27:16Z INFO  nrc] Published profile with display name: Bob
+[2025-09-08T16:27:16Z INFO  nrc] 📦 Publishing key package for npub1qexws9kdqrfsngxttpqrkgxgpcusht68ktclpf5zcang6x98kg7qwrcmws
+🔄 Bob waiting for background processing...
+[2025-09-08T16:27:16Z INFO  nrc] 📦 Key package event sent: 7a7db16ea0882e6bdba9a062a3be849a5c5f8ecd344b9e917374bb6a63e810ec
+✅ Bob processing wait complete
+🔄 Bob waiting for background processing...
+✅ Bob processing wait complete
+[2025-09-08T16:27:17Z INFO  nrc] ✅ Initialization complete, state: Ready { key_package_published: true, groups: [] }
+✅ Ready state reached!
+✅ Bob completed onboarding
+📋 Bob NPub: npub1qexws9kdqrfsngxttpqrkgxgpcusht68ktclpf5zcang6x98kg7qwrcmws
+⏳ Waiting for key packages to propagate...
+💬 Bob joining chat with Alice (npub1e50nhd2cydg75mglmjj8atrhjnz769dk3xuf2xta0ual9psqau2sda7uwa)...
+🔗 Bob joining chat with npub1e50nhd2cydg75mglmjj8atrhjnz769dk3xuf2xta0ual9psqau2sda7uwa
+📊 Bob current group count BEFORE join: 0
+🔄 Bob waiting for join operation (network intensive)...
+[2025-09-08T16:27:20Z INFO  nrc] 🔍 Fetching key package for npub1e50nhd2cydg75mglmjj8atrhjnz769dk3xuf2xta0ual9psqau2sda7uwa
+[2025-09-08T16:27:22Z INFO  nrc] ✅ Found key package on attempt 1: event_id=b2868efbf9a5ce3e792a842d375f4b331d35cb694d6b12a812f48bee704d0b67
+[2025-09-08T16:27:22Z INFO  nrc] 🎁 GROUP_CREATE: Sending welcome message to recipient npub1e50nhd2cydg75mglmjj8atrhjnz769dk3xuf2xta0ual9psqau2sda7uwa
+[2025-09-08T16:27:22Z INFO  nrc] 🎁 GROUP_CREATE: Welcome message sent successfully
+🔄 Bob waiting for background processing...
+✅ Bob processing wait complete
+📊 Bob group count AFTER join: 1
+🔍 Bob current state: Ready { key_package_published: true, groups: [GroupId { value: VLBytes { 0x1218a763297c35e34bf7b2a5c2a04075 } }] }
+✅ Bob created group (count: 1)
+⏳ Waiting for Alice to receive welcome...
+🔍 Alice triggering FetchWelcomes
+📊 Alice current group count BEFORE: 0
+🔄 Alice waiting for background processing...
+[2025-09-08T16:27:27Z INFO  nrc] 📥 FETCH_WELCOMES: Starting for npub1e50nhd2cydg75mglmjj8atrhjnz769dk3xuf2xta0ual9psqau2sda7uwa
+✅ Alice processing wait complete
+📊 Alice group count AFTER FetchWelcomes: 0
+🔍 Alice current state: Ready { key_package_published: true, groups: [] }
+🔄 Alice waiting for background processing...
+✅ Alice processing wait complete
+📊 Alice group count: 0
+⚠️  Alice hasn't joined yet, checking for errors...
+🔍 Alice state: Ready { key_package_published: true, groups: [] }
+
+thread 'test_evented_two_account_dm_flow' panicked at tests/evented_integration_test.rs:326:5:
+assertion `left == right` failed: Alice should have joined the group
+  left: 0
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test test_evented_two_account_dm_flow ... FAILED
+
+failures:
+
+failures:
+    test_evented_two_account_dm_flow
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 33.06s
+
+error: test failed, to rerun pass `--test evented_integration_test`

@@ -1,5 +1,6 @@
 use crate::actions::{Action, OnboardingChoice};
-use crate::{AppState, Message, Nrc, OnboardingMode};
+use crate::notification_handler::spawn_notification_handler;
+use crate::{AppEvent, AppState, Message, Nrc, OnboardingMode};
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use nostr_sdk::prelude::*;
@@ -35,6 +36,7 @@ pub struct EventedNrc {
 }
 
 impl EventedNrc {
+    #[allow(clippy::await_holding_lock)]
     pub async fn new(datadir: &Path) -> Result<Self> {
         // Create the underlying Nrc
         let nrc = Nrc::new(datadir).await?;
@@ -57,10 +59,47 @@ impl EventedNrc {
         let (ui_state_tx, ui_state_rx) = watch::channel(initial_ui_state);
         let (action_tx, mut action_rx) = mpsc::unbounded_channel();
 
+        // Create channel for AppEvents from notification handler
+        let (app_event_tx, mut app_event_rx) = mpsc::unbounded_channel();
+
         // Wrap Nrc in Arc<Mutex> for thread safety
         let nrc = Arc::new(Mutex::new(nrc));
         let nrc_clone = nrc.clone();
         let ui_state_tx_clone = ui_state_tx.clone();
+
+        // Spawn notification handler for real-time events
+        {
+            let client = nrc.lock().unwrap().client.clone();
+            spawn_notification_handler(client, app_event_tx);
+        }
+
+        // Spawn bridge to convert AppEvents to Actions
+        let action_tx_bridge = action_tx.clone();
+        tokio::spawn(async move {
+            while let Some(app_event) = app_event_rx.recv().await {
+                log::debug!("🌉 BRIDGE: Converting AppEvent to Action: {app_event:?}");
+                let action = match app_event {
+                    AppEvent::RawWelcomesReceived { events } => {
+                        Some(Action::RawWelcomesReceived(events))
+                    }
+                    AppEvent::RawMessagesReceived { events } => {
+                        Some(Action::RawMessagesReceived(events))
+                    }
+                    AppEvent::NetworkError { error } => {
+                        log::error!("🌉 BRIDGE: Network error from notification handler: {error}");
+                        None // Could add an action for this if needed
+                    }
+                    _ => {
+                        log::debug!("🌉 BRIDGE: Unhandled AppEvent: {app_event:?}");
+                        None
+                    }
+                };
+
+                if let Some(action) = action {
+                    let _ = action_tx_bridge.send(action);
+                }
+            }
+        });
 
         // Spawn the event processor in a dedicated thread with its own runtime
         std::thread::spawn(move || {
@@ -70,11 +109,15 @@ impl EventedNrc {
                     log::debug!("⚡ PROCESS: {action:?}");
 
                     // Process action with locked Nrc
-                    let mut nrc_guard = nrc_clone.lock().unwrap();
-                    if let Err(e) =
-                        process_action_sync(&mut nrc_guard, action, &ui_state_tx_clone).await
+                    // Note: This is safe in our single-threaded event loop design
                     {
-                        log::error!("Action processing error: {e}");
+                        #[allow(clippy::await_holding_lock)]
+                        let mut nrc_guard = nrc_clone.lock().unwrap();
+                        if let Err(e) =
+                            process_action_sync(&mut nrc_guard, action, &ui_state_tx_clone).await
+                        {
+                            log::error!("Action processing error: {e}");
+                        }
                     }
                 }
             });
@@ -99,7 +142,11 @@ impl EventedNrc {
 
     /// Get current npub (derives from current keys in UI state)
     pub fn get_npub(&self) -> String {
-        self.ui_state.borrow().current_pubkey.to_bech32().unwrap_or_else(|_| "unknown".to_string())
+        self.ui_state
+            .borrow()
+            .current_pubkey
+            .to_bech32()
+            .unwrap_or_else(|_| "unknown".to_string())
     }
 
     /// Get messages for a specific group
@@ -275,6 +322,22 @@ async fn process_action_sync(
                 let _ = nrc.process_welcome_event(event).await;
             } else if event.kind == Kind::from(445u16) {
                 let _ = nrc.process_message_event(event).await;
+            }
+        }
+        Action::RawWelcomesReceived(events) => {
+            log::debug!("📥 RAW_WELCOMES: Processing {} events", events.len());
+            for event in events {
+                if let Err(e) = nrc.process_welcome_event(event).await {
+                    log::error!("📥 RAW_WELCOMES: Failed to process welcome: {e}");
+                }
+            }
+        }
+        Action::RawMessagesReceived(events) => {
+            log::debug!("📨 RAW_MESSAGES: Processing {} events", events.len());
+            for event in events {
+                if let Err(e) = nrc.process_message_event(event).await {
+                    log::error!("📨 RAW_MESSAGES: Failed to process message: {e}");
+                }
             }
         }
         _ => {

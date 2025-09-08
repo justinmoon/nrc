@@ -40,6 +40,8 @@ pub enum Action {
 
     // Raw events from network
     NostrEventReceived(Event),
+    RawWelcomesReceived(Vec<Event>),
+    RawMessagesReceived(Vec<Event>),
 
     // Keyboard events (raw)
     KeyPress(KeyEvent),

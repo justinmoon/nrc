@@ -84,7 +84,6 @@ async fn main() -> Result<()> {
         .target(env_logger::Target::Pipe(Box::new(
             OpenOptions::new()
                 .create(true)
-                
                 .append(true)
                 .open(&log_file)
                 .expect("Failed to open log file"),

@@ -219,7 +219,10 @@ impl Nrc {
     }
 
     pub async fn publish_key_package(&mut self) -> Result<()> {
-        log::info!("📦 Publishing key package for {}", self.keys.public_key().to_bech32()?);
+        log::info!(
+            "📦 Publishing key package for {}",
+            self.keys.public_key().to_bech32()?
+        );
         // First subscribe to key packages so we can verify our own
         let filter = Filter::new()
             .kind(Kind::from(443u16))
@@ -296,14 +299,26 @@ impl Nrc {
                 .await?;
 
             if let Some(event) = events.into_iter().next() {
-                log::info!("✅ Found key package on attempt {attempt}: event_id={}", event.id);
+                log::info!(
+                    "✅ Found key package on attempt {attempt}: event_id={}",
+                    event.id
+                );
                 return Ok(event);
             }
-            log::warn!("⚠️ Key package not found on attempt {attempt} for {}", pubkey.to_bech32()?);
+            log::warn!(
+                "⚠️ Key package not found on attempt {attempt} for {}",
+                pubkey.to_bech32()?
+            );
         }
 
-        log::error!("❌ Failed to find key package for {} after 10 attempts", pubkey.to_bech32()?);
-        Err(anyhow::anyhow!("No key package found for {}", pubkey.to_bech32()?))
+        log::error!(
+            "❌ Failed to find key package for {} after 10 attempts",
+            pubkey.to_bech32()?
+        );
+        Err(anyhow::anyhow!(
+            "No key package found for {}",
+            pubkey.to_bech32()?
+        ))
     }
 
     pub async fn create_group(&mut self, name: String) -> Result<GroupId> {
@@ -381,8 +396,17 @@ impl Nrc {
 
         if let Some(welcome_rumor) = group_result.welcome_rumors.first() {
             let recipient_pubkey = key_package.pubkey;
+            log::info!(
+                "🎁 GROUP_CREATE: Sending welcome message to recipient {}",
+                recipient_pubkey.to_bech32()?
+            );
             self.welcome_rumors
                 .insert(recipient_pubkey, welcome_rumor.clone());
+
+            // Actually send the welcome message
+            self.send_gift_wrapped_welcome(&recipient_pubkey, welcome_rumor.clone())
+                .await?;
+            log::info!("🎁 GROUP_CREATE: Welcome message sent successfully");
         }
 
         if let AppState::Ready {
@@ -429,7 +453,12 @@ impl Nrc {
     }
 
     pub async fn fetch_and_process_welcomes(&mut self) -> Result<()> {
+        log::info!(
+            "📥 FETCH_WELCOMES: Starting for {}",
+            self.keys.public_key().to_bech32()?
+        );
         let filter = Nrc::giftwrap_filter_for_recipient(&self.keys.public_key()).limit(10);
+        log::debug!("📥 FETCH_WELCOMES: Filter: {filter:?}");
 
         tokio::time::sleep(Duration::from_secs(2)).await;
 
@@ -438,20 +467,46 @@ impl Nrc {
             .fetch_events(filter, Duration::from_secs(10))
             .await?;
 
-        for gift_wrap in events {
-            if let Ok(unwrapped) = self.client.unwrap_gift_wrap(&gift_wrap).await {
+        log::info!(
+            "📥 FETCH_WELCOMES: Found {} potential gift-wrapped events",
+            events.len()
+        );
+
+        for (i, gift_wrap) in events.iter().enumerate() {
+            log::debug!(
+                "📥 FETCH_WELCOMES: Processing gift wrap {} - id: {}, kind: {}",
+                i,
+                gift_wrap.id,
+                gift_wrap.kind
+            );
+            if let Ok(unwrapped) = self.client.unwrap_gift_wrap(gift_wrap).await {
+                log::debug!(
+                    "📥 FETCH_WELCOMES: Successfully unwrapped gift wrap {}, rumor kind: {}",
+                    i,
+                    unwrapped.rumor.kind
+                );
                 if unwrapped.rumor.kind == Kind::from(444u16) {
+                    log::info!(
+                        "📥 FETCH_WELCOMES: Found welcome message (kind 444) in gift wrap {i}"
+                    );
                     // Process the welcome to add it to pending welcomes
                     let welcome = self
                         .storage
                         .process_welcome(&gift_wrap.id, &unwrapped.rumor)?;
+                    log::info!(
+                        "📥 FETCH_WELCOMES: Processed welcome, group_id: {:?}",
+                        welcome.mls_group_id
+                    );
 
                     // Accept the welcome to actually join the group
                     self.storage.accept_welcome(&welcome)?;
+                    log::info!("📥 FETCH_WELCOMES: Accepted welcome for group");
 
                     // Get the group info from storage after accepting
                     let group_id = GroupId::from_slice(welcome.mls_group_id.as_slice());
+                    log::debug!("📥 FETCH_WELCOMES: Looking up group with id: {group_id:?}");
                     if let Ok(Some(group)) = self.storage.get_group(&group_id) {
+                        log::info!("📥 FETCH_WELCOMES: Successfully retrieved group from storage");
                         self.groups.insert(group_id.clone(), group.clone());
 
                         // Subscribe to messages for this group
@@ -481,10 +536,18 @@ impl Nrc {
                             groups,
                         };
                     }
+                } else {
+                    log::debug!("📥 FETCH_WELCOMES: Gift wrap {} contains rumor kind {}, not a welcome message (444)", i, unwrapped.rumor.kind);
                 }
+            } else {
+                log::debug!("📥 FETCH_WELCOMES: Failed to unwrap gift wrap {i}");
             }
         }
 
+        log::info!(
+            "📥 FETCH_WELCOMES: Completed processing {} gift-wrapped events",
+            events.len()
+        );
         Ok(())
     }
 
@@ -724,7 +787,7 @@ impl Nrc {
         display_name: String,
         password: String,
     ) -> Result<()> {
-        log::info!("🚀 Starting initialization for new user: {}", display_name);
+        log::info!("🚀 Starting initialization for new user: {display_name}");
         self.state = AppState::Initializing;
 
         // Save the keys encrypted with the password (npub is derived from keys)

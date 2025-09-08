@@ -145,9 +145,12 @@ impl EventedTestClient {
         );
 
         self.evented.emit(Action::JoinGroup(other_npub.to_string()));
-        
+
         // Wait longer for network operations like key package fetching
-        println!("🔄 {} waiting for join operation (network intensive)...", self.name);
+        println!(
+            "🔄 {} waiting for join operation (network intensive)...",
+            self.name
+        );
         sleep(Duration::from_secs(3)).await;
         self.wait_for_processing().await?;
 
@@ -305,7 +308,7 @@ async fn test_evented_two_account_dm_flow() -> Result<()> {
 
     // Wait for Alice to receive the welcome message
     println!("⏳ Waiting for Alice to receive welcome...");
-    sleep(Duration::from_secs(4)).await;
+    sleep(Duration::from_secs(10)).await;
 
     // Trigger welcome processing for Alice
     alice.trigger_fetch_welcomes().await?;

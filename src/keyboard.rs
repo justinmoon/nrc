@@ -8,13 +8,10 @@ pub fn spawn_keyboard_listener(tx: mpsc::UnboundedSender<KeyEvent>) {
         loop {
             // Poll with zero timeout - never blocks
             if event::poll(Duration::ZERO).unwrap_or(false) {
-                match event::read() {
-                    Ok(Event::Key(key)) => {
-                        let _ = tx.send(key);
-                    }
-                    // TODO: Handle paste events
-                    _ => {}
+                if let Ok(Event::Key(key)) = event::read() {
+                    let _ = tx.send(key);
                 }
+                // TODO: Handle paste events
             }
             thread::sleep(Duration::from_millis(10));
         }
