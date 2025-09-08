@@ -243,21 +243,8 @@ impl Nrc {
                             if let Ok(Some(group)) = self.storage.get_group(&group_id) {
                                 self.groups.insert(group_id.clone(), group.clone());
 
-                                // Subscribe to messages for this group
-                                let h_tag_value = hex::encode(group.nostr_group_id);
-                                let filter = Filter::new()
-                                    .kind(Kind::from(445u16))
-                                    .custom_tag(
-                                        SingleLetterTag::lowercase(Alphabet::H),
-                                        h_tag_value,
-                                    )
-                                    .limit(100);
-                                let _ = self.client.subscribe(filter, None).await;
-
-                                // Fetch the profile of the person who invited us
-                                if let Some(admin) = group.admin_pubkeys.first() {
-                                    let _ = self.fetch_profile(admin).await;
-                                }
+                                // Note: Message subscription and profile fetching
+                                // are handled by background tasks for better performance
                             }
 
                             // Update state to include new group
