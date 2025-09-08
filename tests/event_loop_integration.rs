@@ -23,8 +23,8 @@ async fn test_welcome_message_regression_and_chat() -> Result<()> {
     let alice_npub = alice.npub().await?;
     let alice_pubkey = PublicKey::from_bech32(&alice_npub)?;
 
-    // Bob joins with Alice's npub (like user would type /j <npub>)
-    bob.execute_command(&format!("/j {alice_npub}")).await?;
+    // Bob joins with Alice's npub (like user would type /d <npub>)
+    bob.execute_command(&format!("/d {alice_npub}")).await?;
 
     // Give it a moment to process
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -168,7 +168,7 @@ async fn test_welcome_sent_over_network() -> Result<()> {
     // For now, we just verify the welcome_rumor is created and group is formed
 
     // Bob joins Alice
-    bob.execute_command(&format!("/j {alice_npub}")).await?;
+    bob.execute_command(&format!("/d {alice_npub}")).await?;
 
     // Wait a bit for async operations
     tokio::time::sleep(Duration::from_secs(1)).await;

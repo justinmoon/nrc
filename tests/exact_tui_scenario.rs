@@ -45,17 +45,17 @@ async fn exact_tui_scenario_test() -> Result<()> {
     println!("\n=== WAITING FOR KEY PACKAGE PROPAGATION ===");
     tokio::time::sleep(Duration::from_secs(5)).await;
 
-    // === STEP 3: BOTTOM runs /j <top_npub> (like typing in TUI) ===
-    println!("\n=== BOTTOM RUNNING: /j {top_npub} ===");
+    // === STEP 3: BOTTOM runs /d <top_npub> (like typing in TUI) ===
+    println!("\n=== BOTTOM RUNNING: /d {top_npub} ===");
 
-    // User types /j <npub> in TUI and hits enter
-    let input = format!("/j {top_npub}");
+    // User types /d <npub> in TUI and hits enter
+    let input = format!("/d {top_npub}");
     bottom.process_input(input).await?;
 
     // Check if there was an error displayed in TUI
     assert!(
         bottom.last_error.is_none(),
-        "BOTTOM should not have errors after /j command, but got: {:?}",
+        "BOTTOM should not have errors after /d command, but got: {:?}",
         bottom.last_error
     );
 

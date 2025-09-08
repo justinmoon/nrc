@@ -69,7 +69,7 @@ impl KeyStorage {
             params![npub, encrypted_str],
         )?;
 
-        log::info!("Keys saved to database for npub: {}", npub);
+        log::info!("Keys saved to database for npub: {npub}");
         Ok(())
     }
 
@@ -97,7 +97,7 @@ impl KeyStorage {
     pub fn delete_by_npub(&self, npub: &str) -> Result<()> {
         let conn = Connection::open(&self.db_path)?;
         conn.execute("DELETE FROM keys WHERE npub = ?1", params![npub])?;
-        log::info!("Deleted keys for npub: {}", npub);
+        log::info!("Deleted keys for npub: {npub}");
         Ok(())
     }
 }
