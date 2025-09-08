@@ -6,20 +6,22 @@ use std::time::Duration;
 
 impl Nrc {
     pub async fn publish_profile(&mut self, display_name: String) -> Result<()> {
-        // Create metadata for the profile
+        // Store it locally first
         let metadata = Metadata::new()
             .display_name(display_name.clone())
             .name(display_name.clone());
 
-        // Store it locally too
         self.profiles
             .insert(self.keys.public_key(), metadata.clone());
 
-        // Publish to Nostr
-        let event = EventBuilder::metadata(&metadata).sign(&self.keys).await?;
-        self.client.send_event(&event).await?;
-
-        log::info!("Published profile with display name: {display_name}");
+        // Use network task channel instead of direct network call
+        if let Some(command_tx) = &self.command_tx {
+            command_tx
+                .send(crate::NetworkCommand::PublishProfile { display_name })
+                .await?;
+        } else {
+            return Err(anyhow::anyhow!("Network task not initialized"));
+        }
         Ok(())
     }
 

@@ -1,5 +1,3 @@
-use crate::config::get_default_relays;
-use crate::types::AppState;
 use crate::Nrc;
 use anyhow::Result;
 use nostr_sdk::prelude::*;
@@ -7,49 +5,14 @@ use std::time::Duration;
 
 impl Nrc {
     pub async fn publish_key_package(&mut self) -> Result<()> {
-        // First subscribe to key packages so we can verify our own
-        let filter = Filter::new()
-            .kind(Kind::from(443u16))
-            .author(self.keys.public_key());
-        self.client.subscribe(filter, None).await?;
-
-        let relays: Result<Vec<RelayUrl>, _> = get_default_relays()
-            .iter()
-            .map(|&url| RelayUrl::parse(url))
-            .collect();
-        let relays = relays?;
-        let (key_package_content, tags) = self
-            .storage
-            .create_key_package_for_event(&self.keys.public_key(), relays)?;
-
-        let event = EventBuilder::new(Kind::from(443u16), key_package_content)
-            .tags(tags)
-            .build(self.keys.public_key())
-            .sign(&self.keys)
-            .await?;
-
-        self.client.send_event(&event).await?;
-
-        // Wait a bit to ensure it's published
-        tokio::time::sleep(Duration::from_secs(1)).await;
-
-        let filter = Filter::new()
-            .kind(Kind::GiftWrap)
-            .pubkey(self.keys.public_key());
-        self.client.subscribe(filter, None).await?;
-
-        if let AppState::Ready { groups, .. } = &self.state {
-            self.state = AppState::Ready {
-                key_package_published: true,
-                groups: groups.clone(),
-            };
+        // Use network task channel instead of direct network call
+        if let Some(command_tx) = &self.command_tx {
+            command_tx
+                .send(crate::NetworkCommand::PublishKeyPackage)
+                .await?;
         } else {
-            self.state = AppState::Ready {
-                key_package_published: true,
-                groups: Vec::new(),
-            };
+            return Err(anyhow::anyhow!("Network task not initialized"));
         }
-
         Ok(())
     }
 

@@ -18,6 +18,7 @@ pub mod groups;
 pub mod key_storage;
 pub mod messages;
 pub mod network;
+pub mod network_task;
 pub mod notification_handler;
 pub mod profiles;
 pub mod state;
@@ -123,5 +124,136 @@ impl Nrc {
                 nsec: None,
             },
         })
+    }
+
+    pub async fn handle_storage_command(
+        &mut self,
+        command: network_task::StorageCommand,
+    ) -> network_task::StorageResponse {
+        use network_task::{StorageCommand, StorageResponse};
+        use nrc_mls::groups::NostrGroupConfigData;
+
+        match command {
+            StorageCommand::CreateMessage { group_id, rumor } => {
+                match self.storage.create_message(&group_id, rumor) {
+                    Ok(event) => StorageResponse::MessageCreated(event),
+                    Err(e) => StorageResponse::Error(e.to_string()),
+                }
+            }
+            StorageCommand::GetGroup { group_id } => {
+                StorageResponse::Group(self.groups.get(&group_id).cloned())
+            }
+            StorageCommand::GetGroups => StorageResponse::Groups(self.groups.clone()),
+            StorageCommand::CreateGroup { name, keys } => {
+                let config = NostrGroupConfigData::new(
+                    name,
+                    "NRC Chat Group".to_string(),
+                    None,
+                    None,
+                    None,
+                    vec![get_default_relays()[0].parse().unwrap()],
+                    vec![keys.public_key()],
+                );
+
+                match self
+                    .storage
+                    .create_group(&keys.public_key(), vec![], config.clone())
+                {
+                    Ok(group_result) => {
+                        let group_id =
+                            GroupId::from_slice(group_result.group.mls_group_id.as_slice());
+
+                        // Store group in our local map
+                        self.groups
+                            .insert(group_id.clone(), group_result.group.clone());
+
+                        // Create welcome rumor if there is one
+                        let welcome_rumor = if let Some(rumor) = group_result.welcome_rumors.first()
+                        {
+                            rumor.clone()
+                        } else {
+                            // Create a dummy welcome rumor for solo groups
+                            EventBuilder::new(Kind::from(442u16), "solo_group")
+                                .build(keys.public_key())
+                        };
+
+                        StorageResponse::GroupCreated {
+                            group_id,
+                            welcome_rumor,
+                        }
+                    }
+                    Err(e) => StorageResponse::Error(e.to_string()),
+                }
+            }
+            StorageCommand::JoinGroupFromWelcome {
+                welcome_rumor: _,
+                keys: _,
+            } => {
+                // For now, just return an error since join_group is more complex
+                StorageResponse::Error(
+                    "Join group not yet implemented in storage handler".to_string(),
+                )
+            }
+            StorageCommand::MergeGroupConfig { config: _ } => {
+                // merge_group_config doesn't exist, return error for now
+                StorageResponse::Error("Merge group config not yet implemented".to_string())
+            }
+            StorageCommand::GetKeyPackage { keys } => {
+                // Create the key package event
+                let relays: Result<Vec<RelayUrl>, _> = get_default_relays()
+                    .iter()
+                    .map(|&url| RelayUrl::parse(url))
+                    .collect();
+
+                match relays {
+                    Ok(relay_urls) => {
+                        match self
+                            .storage
+                            .create_key_package_for_event(&keys.public_key(), relay_urls)
+                        {
+                            Ok((key_package_content, tags)) => {
+                                match EventBuilder::new(Kind::from(443u16), key_package_content)
+                                    .tags(tags)
+                                    .build(keys.public_key())
+                                    .sign(&keys)
+                                    .await
+                                {
+                                    Ok(event) => StorageResponse::KeyPackage(event),
+                                    Err(e) => StorageResponse::Error(e.to_string()),
+                                }
+                            }
+                            Err(e) => StorageResponse::Error(e.to_string()),
+                        }
+                    }
+                    Err(e) => StorageResponse::Error(e.to_string()),
+                }
+            }
+            StorageCommand::ProcessMessageEvent { event } => {
+                // Process message using the process_message method
+                match self.storage.process_message(&event) {
+                    Ok(result) => {
+                        use nrc_mls::messages::MessageProcessingResult;
+                        match result {
+                            MessageProcessingResult::ApplicationMessage(msg) => {
+                                if msg.kind == Kind::TextNote {
+                                    if let Ok(Some(stored_msg)) = self.storage.get_message(&msg.id)
+                                    {
+                                        let message = crate::Message {
+                                            content: stored_msg.content.clone(),
+                                            sender: stored_msg.pubkey,
+                                            timestamp: stored_msg.created_at,
+                                        };
+                                        return StorageResponse::MessageProcessed(Some(message));
+                                    }
+                                }
+                                StorageResponse::MessageProcessed(None)
+                            }
+                            _ => StorageResponse::MessageProcessed(None),
+                        }
+                    }
+                    Err(e) => StorageResponse::Error(e.to_string()),
+                }
+            }
+        }
     }
 }

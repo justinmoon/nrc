@@ -10,45 +10,16 @@ use std::time::Duration;
 
 impl Nrc {
     pub async fn create_group(&mut self, name: String) -> Result<GroupId> {
-        let config = NostrGroupConfigData::new(
-            name,
-            "NRC Chat Group".to_string(),
-            None,
-            None,
-            None,
-            vec![RelayUrl::parse(get_default_relays()[0])?],
-            vec![self.keys.public_key()],
-        );
-
-        let group_result = self
-            .storage
-            .create_group(&self.keys.public_key(), vec![], config)?;
-        let group_id = GroupId::from_slice(group_result.group.mls_group_id.as_slice());
-
-        self.groups
-            .insert(group_id.clone(), group_result.group.clone());
-
-        // Subscribe to messages for this group
-        let h_tag_value = hex::encode(group_result.group.nostr_group_id);
-        let filter = Filter::new()
-            .kind(Kind::from(445u16))
-            .custom_tag(SingleLetterTag::lowercase(Alphabet::H), h_tag_value)
-            .limit(100);
-        self.client.subscribe(filter, None).await?;
-
-        if let AppState::Ready {
-            key_package_published,
-            mut groups,
-        } = self.state.clone()
-        {
-            groups.push(group_id.clone());
-            self.state = AppState::Ready {
-                key_package_published,
-                groups,
-            };
+        // Use network task channel instead of direct network call
+        if let Some(command_tx) = &self.command_tx {
+            command_tx
+                .send(crate::NetworkCommand::CreateGroup { name })
+                .await?;
+            // Return a placeholder - actual group ID will come via events
+            Ok(GroupId::from_slice(&[0u8; 16]))
+        } else {
+            Err(anyhow::anyhow!("Network task not initialized"))
         }
-
-        Ok(group_id)
     }
 
     pub async fn create_multi_user_group(

@@ -9,35 +9,14 @@ use std::time::Duration;
 
 impl Nrc {
     pub async fn send_message(&mut self, group_id: GroupId, content: String) -> Result<()> {
-        let group_id_clone = group_id.clone();
-        let content = &content;
-        let text_note_rumor = EventBuilder::text_note(content).build(self.keys.public_key());
-
-        let event = self
-            .storage
-            .create_message(&group_id_clone, text_note_rumor.clone())?;
-
-        // Note: merge_pending_commit is already called inside create_message
-
-        // Send message directly - retry logic can be added later if needed
-        log::debug!(
-            "Sending message event: id={}, kind={}",
-            event.id,
-            event.kind
-        );
-        self.client.send_event(&event).await?;
-
-        // Add our own message to local history immediately
-        // Since we're sending to ourselves, it won't come back from the relay
-        // TODO: In the future, we could implement proper deduplication to handle
-        // cases where our own messages might be received from relays
-        let message = Message {
-            content: content.clone(),
-            sender: self.keys.public_key(),
-            timestamp: text_note_rumor.created_at,
-        };
-        self.add_message(group_id, message);
-
+        // Use network task channel instead of direct network call
+        if let Some(command_tx) = &self.command_tx {
+            command_tx
+                .send(crate::NetworkCommand::SendMessage { group_id, content })
+                .await?;
+        } else {
+            return Err(anyhow::anyhow!("Network task not initialized"));
+        }
         Ok(())
     }
 
