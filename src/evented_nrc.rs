@@ -90,6 +90,7 @@ impl EventedNrc {
     
     /// Emit an action to be processed
     pub fn emit(&self, action: Action) {
+        log::debug!("🚀 EMIT: {:?}", action);
         let _ = self.action_tx.send(action);
     }
     
@@ -130,6 +131,7 @@ impl EventLoop {
     /// Run the event loop - this should be called in the main task
     pub async fn run(mut self) {
         while let Some(action) = self.action_rx.recv().await {
+            log::debug!("⚡ PROCESS: {:?}", action);
             if let Err(e) = process_action(
                 &mut self.nrc,
                 action,
@@ -142,33 +144,43 @@ impl EventLoop {
                 &self.flash_tx,
                 &self.help_tx,
             ).await {
-                log::error!("Error processing action: {}", e);
+                log::error!("❌ Error processing action: {}", e);
                 let _ = self.error_tx.send(Some(format!("Error: {}", e)));
             }
         }
+        log::debug!("🔚 Action channel closed, stopping event loop");
     }
     
     /// Process a single action (for testing or step-by-step execution)
     pub async fn process_one(&mut self) -> Option<()> {
-        if let Some(action) = self.action_rx.recv().await {
-            if let Err(e) = process_action(
-                &mut self.nrc,
-                action,
-                &self.state_tx,
-                &self.messages_tx,
-                &self.groups_tx,
-                &self.input_tx,
-                &self.selected_tx,
-                &self.error_tx,
-                &self.flash_tx,
-                &self.help_tx,
-            ).await {
-                log::error!("Error processing action: {}", e);
-                let _ = self.error_tx.send(Some(format!("Error: {}", e)));
+        match self.action_rx.try_recv() {
+            Ok(action) => {
+                log::debug!("⚡ PROCESS: {:?}", action);
+                if let Err(e) = process_action(
+                    &mut self.nrc,
+                    action,
+                    &self.state_tx,
+                    &self.messages_tx,
+                    &self.groups_tx,
+                    &self.input_tx,
+                    &self.selected_tx,
+                    &self.error_tx,
+                    &self.flash_tx,
+                    &self.help_tx,
+                ).await {
+                    log::error!("❌ Error processing action: {}", e);
+                    let _ = self.error_tx.send(Some(format!("Error: {}", e)));
+                }
+                Some(())
             }
-            Some(())
-        } else {
-            None
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                log::debug!("🔚 No actions in queue");
+                None
+            }
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                log::debug!("🔚 Action channel disconnected");
+                None
+            }
         }
     }
 }
@@ -315,6 +327,11 @@ async fn process_action(
         }
         Action::SetDisplayName(name) => {
             nrc.onboarding_data.display_name = Some(name);
+            // Transition to password creation mode
+            nrc.state = AppState::Onboarding {
+                input: String::new(),
+                mode: OnboardingMode::CreatePassword,
+            };
         }
         Action::SetPassword(password) => {
             // Handle password based on current onboarding mode
@@ -351,6 +368,11 @@ async fn process_action(
         }
         Action::SetNsec(nsec) => {
             nrc.onboarding_data.nsec = Some(nsec);
+            // Transition to password creation mode for import flow
+            nrc.state = AppState::Onboarding {
+                input: String::new(),
+                mode: OnboardingMode::CreatePassword,
+            };
         }
         Action::FetchMessages => {
             let _ = nrc.fetch_and_process_messages().await;
@@ -388,6 +410,14 @@ fn update_watchers(
     flash_tx: &watch::Sender<Option<String>>,
     help_tx: &watch::Sender<bool>,
 ) {
+    log::debug!("📡 STATE UPDATE: {:?}", nrc.state);
+    if let Some(ref err) = nrc.last_error {
+        log::debug!("📡 ERROR UPDATE: {}", err);
+    }
+    if let Some(ref flash) = nrc.flash_message {
+        log::debug!("📡 FLASH UPDATE: {}", flash);
+    }
+    
     let _ = state_tx.send(nrc.state.clone());
     let _ = messages_tx.send(nrc.messages.clone());
     let _ = groups_tx.send(nrc.groups.clone());
