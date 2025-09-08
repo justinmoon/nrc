@@ -4,88 +4,74 @@ use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use nostr_sdk::prelude::*;
 use openmls::group::GroupId;
+use nrc_mls_storage::groups::types as group_types;
 use std::collections::HashMap;
 use std::path::Path;
 use std::str::FromStr;
 use tokio::sync::{mpsc, watch};
 
+/// UI State containing all data needed for rendering
+#[derive(Clone, Debug)]
+pub struct UIState {
+    pub app_state: AppState,
+    pub messages: HashMap<GroupId, Vec<Message>>,
+    pub groups: HashMap<GroupId, group_types::Group>,
+    pub input: String,
+    pub selected_group_index: Option<usize>,
+    pub last_error: Option<String>,
+    pub flash_message: Option<String>,
+    pub show_help: bool,
+    pub profiles: HashMap<PublicKey, Metadata>,
+}
+
 pub struct EventedNrc {
-    // Read-only state for UI
-    pub state: watch::Receiver<AppState>,
-    
-    // UI can read these for display
-    pub messages: watch::Receiver<HashMap<GroupId, Vec<Message>>>,
-    pub groups: watch::Receiver<HashMap<GroupId, nrc_mls_storage::groups::types::Group>>,
-    pub input: watch::Receiver<String>,
-    pub selected_group_index: watch::Receiver<Option<usize>>,
-    pub last_error: watch::Receiver<Option<String>>,
-    pub flash_message: watch::Receiver<Option<String>>,
-    pub show_help: watch::Receiver<bool>,
-    pub npub: String, // Static after initialization
+    // Single unified state channel containing all UI data
+    pub ui_state: watch::Receiver<UIState>,
+    pub npub: String,
     
     // Send actions to the event loop
     action_tx: mpsc::UnboundedSender<Action>,
 }
 
-pub struct EventLoop {
-    nrc: Nrc,
-    action_rx: mpsc::UnboundedReceiver<Action>,
-    state_tx: watch::Sender<AppState>,
-    messages_tx: watch::Sender<HashMap<GroupId, Vec<Message>>>,
-    groups_tx: watch::Sender<HashMap<GroupId, nrc_mls_storage::groups::types::Group>>,
-    input_tx: watch::Sender<String>,
-    selected_tx: watch::Sender<Option<usize>>,
-    error_tx: watch::Sender<Option<String>>,
-    flash_tx: watch::Sender<Option<String>>,
-    help_tx: watch::Sender<bool>,
-}
-
 impl EventedNrc {
-    pub async fn new(datadir: &Path) -> Result<(Self, EventLoop)> {
+    pub async fn new(datadir: &Path) -> Result<Self> {
         // Create the underlying Nrc
         let nrc = Nrc::new(datadir).await?;
         let npub = nrc.keys.public_key().to_bech32()?;
         
-        // Create channels for state watching
-        let (state_tx, state_rx) = watch::channel(nrc.state.clone());
-        let (messages_tx, messages_rx) = watch::channel(nrc.messages.clone());
-        let (groups_tx, groups_rx) = watch::channel(nrc.groups.clone());
-        let (input_tx, input_rx) = watch::channel(nrc.input.clone());
-        let (selected_tx, selected_rx) = watch::channel(nrc.selected_group_index);
-        let (error_tx, error_rx) = watch::channel(nrc.last_error.clone());
-        let (flash_tx, flash_rx) = watch::channel(nrc.flash_message.clone());
-        let (help_tx, help_rx) = watch::channel(nrc.show_help);
+        // Create initial UI state
+        let initial_ui_state = UIState {
+            app_state: nrc.state.clone(),
+            messages: nrc.messages.clone(),
+            groups: nrc.groups.clone(),
+            input: nrc.input.clone(),
+            selected_group_index: nrc.selected_group_index,
+            last_error: nrc.last_error.clone(),
+            flash_message: nrc.flash_message.clone(),
+            show_help: nrc.show_help,
+            profiles: nrc.profiles.clone(),
+        };
         
-        // Create action channel
+        // Create channels
+        let (ui_state_tx, ui_state_rx) = watch::channel(initial_ui_state);
         let (action_tx, action_rx) = mpsc::unbounded_channel();
         
+        // Store the event processor components  
         let evented = EventedNrc {
-            state: state_rx,
-            messages: messages_rx,
-            groups: groups_rx,
-            input: input_rx,
-            selected_group_index: selected_rx,
-            last_error: error_rx,
-            flash_message: flash_rx,
-            show_help: help_rx,
+            ui_state: ui_state_rx,
             npub,
             action_tx,
         };
         
-        let event_loop = EventLoop {
-            nrc,
-            action_rx,
-            state_tx,
-            messages_tx,
-            groups_tx,
-            input_tx,
-            selected_tx,
-            error_tx,
-            flash_tx,
-            help_tx,
-        };
+        // Start the background processor (non-Send, so we use a different approach)
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            runtime.block_on(async move {
+                run_event_loop(nrc, action_rx, ui_state_tx).await;
+            });
+        });
         
-        Ok((evented, event_loop))
+        Ok(evented)
     }
     
     /// Emit an action to be processed
@@ -94,202 +80,95 @@ impl EventedNrc {
         let _ = self.action_tx.send(action);
     }
     
-    /// Helper methods for common UI operations
-    pub fn get_selected_group(&self) -> Option<GroupId> {
-        if let AppState::Ready { ref groups, .. } = &*self.state.borrow() {
-            self.selected_group_index
-                .borrow()
-                .and_then(|idx| groups.get(idx))
-                .cloned()
-        } else {
-            None
-        }
+    /// Helper to get current app state
+    pub fn current_state(&self) -> AppState {
+        self.ui_state.borrow().app_state.clone()
     }
     
-    pub fn get_messages_for_selected_group(&self) -> Vec<Message> {
-        if let Some(group_id) = self.get_selected_group() {
-            self.messages
-                .borrow()
-                .get(&group_id)
-                .cloned()
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        }
-    }
-    
-    pub fn get_group_display_name(&self, group_id: &GroupId) -> String {
-        self.groups
+    /// Get messages for a specific group
+    pub fn get_messages(&self, group_id: &GroupId) -> Vec<Message> {
+        self.ui_state
             .borrow()
+            .messages
             .get(group_id)
-            .map(|g| g.name.clone())
-            .unwrap_or_else(|| "Unknown".to_string())
+            .cloned()
+            .unwrap_or_default()
     }
 }
 
-impl EventLoop {
-    /// Run the event loop - this should be called in the main task
-    pub async fn run(mut self) {
-        while let Some(action) = self.action_rx.recv().await {
-            log::debug!("⚡ PROCESS: {:?}", action);
-            if let Err(e) = process_action(
-                &mut self.nrc,
-                action,
-                &self.state_tx,
-                &self.messages_tx,
-                &self.groups_tx,
-                &self.input_tx,
-                &self.selected_tx,
-                &self.error_tx,
-                &self.flash_tx,
-                &self.help_tx,
-            ).await {
-                log::error!("❌ Error processing action: {}", e);
-                let _ = self.error_tx.send(Some(format!("Error: {}", e)));
-            }
-        }
-        log::debug!("🔚 Action channel closed, stopping event loop");
-    }
+/// Run the event processing loop
+async fn run_event_loop(
+    mut nrc: Nrc,
+    mut action_rx: mpsc::UnboundedReceiver<Action>,
+    ui_state_tx: watch::Sender<UIState>,
+) {
+    const MAX_EVENTS_PER_BATCH: usize = 100;
+    let mut batch_count;
     
-    /// Process a single action (for testing or step-by-step execution)
-    pub async fn process_one(&mut self) -> Option<()> {
-        match self.action_rx.try_recv() {
-            Ok(action) => {
-                log::debug!("⚡ PROCESS: {:?}", action);
-                if let Err(e) = process_action(
-                    &mut self.nrc,
-                    action,
-                    &self.state_tx,
-                    &self.messages_tx,
-                    &self.groups_tx,
-                    &self.input_tx,
-                    &self.selected_tx,
-                    &self.error_tx,
-                    &self.flash_tx,
-                    &self.help_tx,
-                ).await {
-                    log::error!("❌ Error processing action: {}", e);
-                    let _ = self.error_tx.send(Some(format!("Error: {}", e)));
+    loop {
+        batch_count = 0;
+        
+        // Process up to MAX_EVENTS_PER_BATCH actions
+        while batch_count < MAX_EVENTS_PER_BATCH {
+            match action_rx.try_recv() {
+                Ok(action) => {
+                    log::debug!("⚡ PROCESS: {:?}", action);
+                    if let Err(e) = process_action(&mut nrc, action, &ui_state_tx).await {
+                        log::error!("Action processing error: {}", e);
+                    }
+                    batch_count += 1;
                 }
-                Some(())
-            }
-            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
-                log::debug!("🔚 No actions in queue");
-                None
-            }
-            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
-                log::debug!("🔚 Action channel disconnected");
-                None
+                Err(mpsc::error::TryRecvError::Empty) => {
+                    // No more actions, break inner loop
+                    break;
+                }
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    log::info!("Action channel closed, stopping event loop");
+                    return;
+                }
             }
         }
+        
+        if batch_count >= MAX_EVENTS_PER_BATCH {
+            log::warn!("Processed maximum batch size of {} events", MAX_EVENTS_PER_BATCH);
+        }
+        
+        // Wait for next action if none available
+        if batch_count == 0 {
+            match action_rx.recv().await {
+                Some(action) => {
+                    log::debug!("⚡ PROCESS: {:?}", action);
+                    if let Err(e) = process_action(&mut nrc, action, &ui_state_tx).await {
+                        log::error!("Action processing error: {}", e);
+                    }
+                }
+                None => {
+                    log::info!("Action channel closed, stopping event loop");
+                    return;
+                }
+            }
+        }
+        
+        // Yield to other tasks
+        tokio::task::yield_now().await;
     }
 }
 
-/// Process an action and update all state watchers
+/// Process a single action and update state
 async fn process_action(
     nrc: &mut Nrc,
     action: Action,
-    state_tx: &watch::Sender<AppState>,
-    messages_tx: &watch::Sender<HashMap<GroupId, Vec<Message>>>,
-    groups_tx: &watch::Sender<HashMap<GroupId, nrc_mls_storage::groups::types::Group>>,
-    input_tx: &watch::Sender<String>,
-    selected_tx: &watch::Sender<Option<usize>>,
-    error_tx: &watch::Sender<Option<String>>,
-    flash_tx: &watch::Sender<Option<String>>,
-    help_tx: &watch::Sender<bool>,
+    ui_state_tx: &watch::Sender<UIState>,
 ) -> Result<()> {
-    // Clear any previous errors/messages
-    nrc.last_error = None;
-    nrc.flash_message = None;
-    
     match action {
-        Action::KeyPress(key) => {
-            handle_key_press(nrc, key).await?;
-        }
-        Action::Paste(text) => {
-            nrc.input.push_str(&text);
-        }
-        Action::SetInput(text) => {
-            nrc.input = text;
-        }
-        Action::ClearInput => {
-            nrc.input.clear();
+        Action::SetInput(input) => {
+            nrc.input = input;
         }
         Action::Backspace => {
             nrc.input.pop();
         }
-        Action::SendMessage(content) => {
-            if let Some(group_id) = get_selected_group(nrc) {
-                if let Err(e) = nrc.send_message(group_id, content).await {
-                    nrc.last_error = Some(format!("Failed to send: {}", e));
-                }
-            } else {
-                nrc.last_error = Some("No chat selected".to_string());
-            }
-        }
-        Action::JoinGroup(npub) => {
-            // Process the /join command
-            let pubkey = match PublicKey::from_str(&npub) {
-                Ok(pk) => pk,
-                Err(e) => {
-                    nrc.last_error = Some(format!("Invalid public key: {}", e));
-                    update_watchers(nrc, state_tx, messages_tx, groups_tx, input_tx, selected_tx, error_tx, flash_tx, help_tx);
-                    return Ok(());
-                }
-            };
-            
-            // Fetch profile first
-            let _ = nrc.fetch_profile(&pubkey).await;
-            
-            // Check if already in group
-            let already_in_group = if let AppState::Ready { ref groups, .. } = nrc.state {
-                groups.iter().any(|group_id| {
-                    nrc.groups.get(group_id)
-                        .map(|g| g.admin_pubkeys.contains(&pubkey))
-                        .unwrap_or(false)
-                })
-            } else {
-                false
-            };
-            
-            if already_in_group {
-                nrc.flash_message = Some(format!("Already in a group with {}", npub));
-            } else {
-                // Fetch key package and create group
-                match nrc.fetch_key_package(&pubkey).await {
-                    Ok(key_package) => {
-                        match nrc.create_group_with_member(key_package).await {
-                            Ok(group_id) => {
-                                // Send welcome
-                                if let Ok(welcome_rumor) = nrc.get_welcome_rumor_for(&pubkey) {
-                                    let _ = nrc.send_gift_wrapped_welcome(&pubkey, welcome_rumor).await;
-                                }
-                                
-                                // Update state and select new group
-                                if let AppState::Ready { key_package_published, groups } = &nrc.state {
-                                    let mut updated_groups = groups.clone();
-                                    if !updated_groups.contains(&group_id) {
-                                        updated_groups.push(group_id.clone());
-                                    }
-                                    nrc.state = AppState::Ready {
-                                        key_package_published: *key_package_published,
-                                        groups: updated_groups.clone(),
-                                    };
-                                    if let Some(idx) = updated_groups.iter().position(|g| g == &group_id) {
-                                        nrc.selected_group_index = Some(idx);
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                nrc.last_error = Some(format!("Failed to create group: {}", e));
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        nrc.last_error = Some(format!("Failed to fetch key package: {}", e));
-                    }
-                }
-            }
+        Action::ClearInput => {
+            nrc.input.clear();
         }
         Action::NextGroup => {
             nrc.next_group();
@@ -297,82 +176,79 @@ async fn process_action(
         Action::PrevGroup => {
             nrc.prev_group();
         }
-        Action::ShowHelp => {
-            nrc.show_help = true;
-            nrc.help_explicitly_requested = true;
+        Action::ScrollDown => {
+            nrc.scroll_offset = nrc.scroll_offset.saturating_sub(1);
         }
-        Action::DismissHelp => {
-            nrc.dismiss_help();
+        Action::ScrollUp => {
+            nrc.scroll_offset = nrc.scroll_offset.saturating_add(1);
         }
-        Action::CopyNpub => {
-            use clipboard::ClipboardContext;
-            use clipboard::ClipboardProvider;
-            
-            let npub = nrc.keys.public_key().to_bech32().unwrap_or_else(|_| "error".to_string());
-            match ClipboardContext::new() {
-                Ok(mut ctx) => {
-                    if let Err(e) = ctx.set_contents(npub.clone()) {
-                        nrc.last_error = Some(format!("Failed to copy: {}", e));
-                    } else {
-                        nrc.flash_message = Some(format!("Copied npub to clipboard: {}", npub));
-                    }
+        Action::OnboardingChoice(choice) => {
+            match choice {
+                OnboardingChoice::GenerateNew => {
+                    nrc.keys = Keys::generate();
+                    nrc.state = AppState::Onboarding {
+                        input: String::new(),
+                        mode: OnboardingMode::EnterDisplayName,
+                    };
                 }
-                Err(e) => {
-                    nrc.last_error = Some(format!("Clipboard not available: {}", e));
+                OnboardingChoice::ImportExisting => {
+                    nrc.state = AppState::Onboarding {
+                        input: String::new(),
+                        mode: OnboardingMode::ImportExisting,
+                    };
+                }
+                OnboardingChoice::Continue => {
+                    // Handle continue in onboarding flow
                 }
             }
         }
-        Action::OnboardingChoice(choice) => {
-            handle_onboarding_choice(nrc, choice).await?;
-        }
         Action::SetDisplayName(name) => {
             nrc.onboarding_data.display_name = Some(name);
-            // Transition to password creation mode
+            // Transition to password creation
             nrc.state = AppState::Onboarding {
                 input: String::new(),
                 mode: OnboardingMode::CreatePassword,
             };
         }
         Action::SetPassword(password) => {
-            // Handle password based on current onboarding mode
-            match &nrc.state {
-                AppState::Onboarding { mode, .. } => {
-                    match mode {
-                        OnboardingMode::CreatePassword => {
-                            // New user with password
-                            if let Some(display_name) = &nrc.onboarding_data.display_name {
-                                let _ = nrc.initialize_with_display_name_and_password(
-                                    display_name.clone(),
-                                    password
-                                ).await;
-                            }
-                        }
-                        OnboardingMode::ImportExisting => {
-                            // Import with nsec and password
-                            if let Some(nsec) = &nrc.onboarding_data.nsec {
-                                let _ = nrc.initialize_with_nsec_and_password(
-                                    nsec.clone(),
-                                    password
-                                ).await;
-                            }
-                        }
-                        OnboardingMode::EnterPassword => {
-                            // Returning user
-                            let _ = nrc.initialize_with_password(password).await;
-                        }
-                        _ => {}
-                    }
-                }
-                _ => {}
+            // Initialize with password
+            if let Err(e) = nrc.initialize_with_password(password).await {
+                nrc.last_error = Some(e.to_string());
             }
         }
-        Action::SetNsec(nsec) => {
-            nrc.onboarding_data.nsec = Some(nsec);
-            // Transition to password creation mode for import flow
-            nrc.state = AppState::Onboarding {
-                input: String::new(),
-                mode: OnboardingMode::CreatePassword,
-            };
+        Action::SetNsec(nsec_str) => {
+            if let Ok(secret_key) = SecretKey::from_str(&nsec_str) {
+                nrc.keys = Keys::new(secret_key);
+                // Transition to password creation after importing
+                nrc.state = AppState::Onboarding {
+                    input: String::new(),
+                    mode: OnboardingMode::CreatePassword,
+                };
+            } else {
+                nrc.last_error = Some("Invalid nsec format".to_string());
+            }
+        }
+        Action::SendMessage(content) => {
+            if let Some(group_id) = nrc.get_selected_group() {
+                nrc.send_message(group_id, content).await?;
+            }
+        }
+        Action::JoinGroup(npub) => {
+            // Parse the npub to get the public key
+            if let Ok(pubkey) = PublicKey::from_str(&npub) {
+                // Fetch their key package
+                match nrc.fetch_key_package(&pubkey).await {
+                    Ok(key_package) => {
+                        // Create a group with them
+                        let _ = nrc.create_group_with_member(key_package).await;
+                    }
+                    Err(e) => {
+                        nrc.last_error = Some(format!("Failed to join group: {}", e));
+                    }
+                }
+            } else {
+                nrc.last_error = Some("Invalid npub format".to_string());
+            }
         }
         Action::FetchMessages => {
             log::debug!("📨 FETCH_MESSAGES: Starting fetch");
@@ -401,181 +277,107 @@ async fn process_action(
         }
     }
     
-    // Update all watchers with new state
-    update_watchers(nrc, state_tx, messages_tx, groups_tx, input_tx, selected_tx, error_tx, flash_tx, help_tx);
-    
-    Ok(())
-}
-
-fn update_watchers(
-    nrc: &Nrc,
-    state_tx: &watch::Sender<AppState>,
-    messages_tx: &watch::Sender<HashMap<GroupId, Vec<Message>>>,
-    groups_tx: &watch::Sender<HashMap<GroupId, nrc_mls_storage::groups::types::Group>>,
-    input_tx: &watch::Sender<String>,
-    selected_tx: &watch::Sender<Option<usize>>,
-    error_tx: &watch::Sender<Option<String>>,
-    flash_tx: &watch::Sender<Option<String>>,
-    help_tx: &watch::Sender<bool>,
-) {
+    // Update UI state with all current data
+    let ui_state = UIState {
+        app_state: nrc.state.clone(),
+        messages: nrc.messages.clone(),
+        groups: nrc.groups.clone(),
+        input: nrc.input.clone(),
+        selected_group_index: nrc.selected_group_index,
+        last_error: nrc.last_error.clone(),
+        flash_message: nrc.flash_message.clone(),
+        show_help: nrc.show_help,
+        profiles: nrc.profiles.clone(),
+    };
+    let _ = ui_state_tx.send(ui_state);
     log::debug!("📡 STATE UPDATE: {:?}", nrc.state);
-    if let Some(ref err) = nrc.last_error {
-        log::debug!("📡 ERROR UPDATE: {}", err);
-    }
-    if let Some(ref flash) = nrc.flash_message {
-        log::debug!("📡 FLASH UPDATE: {}", flash);
-    }
     
-    let _ = state_tx.send(nrc.state.clone());
-    let _ = messages_tx.send(nrc.messages.clone());
-    let _ = groups_tx.send(nrc.groups.clone());
-    let _ = input_tx.send(nrc.input.clone());
-    let _ = selected_tx.send(nrc.selected_group_index);
-    let _ = error_tx.send(nrc.last_error.clone());
-    let _ = flash_tx.send(nrc.flash_message.clone());
-    let _ = help_tx.send(nrc.show_help);
-}
-
-fn get_selected_group(nrc: &Nrc) -> Option<GroupId> {
-    if let AppState::Ready { ref groups, .. } = &nrc.state {
-        nrc.selected_group_index
-            .and_then(|idx| groups.get(idx))
-            .cloned()
-    } else {
-        None
-    }
-}
-
-async fn handle_key_press(nrc: &mut Nrc, key: KeyEvent) -> Result<()> {
-    match &nrc.state {
-        AppState::Onboarding { mode, .. } => {
-            handle_onboarding_key(nrc, key, mode.clone()).await?;
-        }
-        AppState::Ready { .. } => {
-            handle_ready_key(nrc, key).await?;
-        }
-        _ => {}
-    }
     Ok(())
 }
 
-async fn handle_onboarding_key(nrc: &mut Nrc, key: KeyEvent, mode: OnboardingMode) -> Result<()> {
-    match mode {
-        OnboardingMode::Choose => {
-            match key.code {
-                KeyCode::Char('1') => {
-                    nrc.state = AppState::Onboarding {
-                        input: String::new(),
-                        mode: OnboardingMode::EnterDisplayName,
-                    };
-                }
-                KeyCode::Char('2') => {
-                    nrc.state = AppState::Onboarding {
-                        input: String::new(),
-                        mode: OnboardingMode::ImportExisting,
-                    };
-                }
-                _ => {}
-            }
-        }
-        OnboardingMode::EnterDisplayName => {
-            match key.code {
-                KeyCode::Enter if !nrc.input.is_empty() => {
-                    nrc.onboarding_data.display_name = Some(nrc.input.clone());
-                    nrc.input.clear();
-                    nrc.state = AppState::Onboarding {
-                        input: String::new(),
-                        mode: OnboardingMode::CreatePassword,
-                    };
-                }
-                KeyCode::Char(c) => nrc.input.push(c),
-                KeyCode::Backspace => { nrc.input.pop(); }
-                _ => {}
-            }
-        }
-        OnboardingMode::CreatePassword | OnboardingMode::EnterPassword => {
-            match key.code {
-                KeyCode::Enter if !nrc.input.is_empty() => {
-                    let password = nrc.input.clone();
-                    nrc.input.clear();
-                    
-                    if mode == OnboardingMode::CreatePassword {
-                        if let Some(display_name) = &nrc.onboarding_data.display_name {
-                            let _ = nrc.initialize_with_display_name_and_password(
-                                display_name.clone(),
-                                password
-                            ).await;
-                        }
-                    } else {
-                        let _ = nrc.initialize_with_password(password).await;
+/// Convert keyboard event to action
+pub fn convert_key_to_action(key: KeyEvent, state: &AppState) -> Option<Action> {
+    match state {
+        AppState::Onboarding { input, mode } => {
+            match mode {
+                OnboardingMode::Choose => {
+                    match key.code {
+                        KeyCode::Char('1') => Some(Action::OnboardingChoice(OnboardingChoice::GenerateNew)),
+                        KeyCode::Char('2') => Some(Action::OnboardingChoice(OnboardingChoice::ImportExisting)),
+                        _ => None,
                     }
                 }
-                KeyCode::Char(c) => nrc.input.push(c),
-                KeyCode::Backspace => { nrc.input.pop(); }
-                _ => {}
-            }
-        }
-        OnboardingMode::ImportExisting => {
-            match key.code {
-                KeyCode::Enter if !nrc.input.is_empty() => {
-                    nrc.onboarding_data.nsec = Some(nrc.input.clone());
-                    nrc.input.clear();
-                    // Now ask for password
-                    nrc.state = AppState::Onboarding {
-                        input: String::new(),
-                        mode: OnboardingMode::ImportExisting, // Reuse for password entry
-                    };
+                OnboardingMode::EnterDisplayName => {
+                    match key.code {
+                        KeyCode::Enter if !input.is_empty() => {
+                            Some(Action::SetDisplayName(input.clone()))
+                        }
+                        KeyCode::Char(c) => {
+                            let mut new_input = input.clone();
+                            new_input.push(c);
+                            Some(Action::SetInput(new_input))
+                        }
+                        KeyCode::Backspace => Some(Action::Backspace),
+                        _ => None,
+                    }
                 }
-                KeyCode::Char(c) => nrc.input.push(c),
-                KeyCode::Backspace => { nrc.input.pop(); }
-                _ => {}
+                OnboardingMode::ImportExisting => {
+                    match key.code {
+                        KeyCode::Enter if !input.is_empty() => {
+                            Some(Action::SetNsec(input.clone()))
+                        }
+                        KeyCode::Char(c) => {
+                            let mut new_input = input.clone();
+                            new_input.push(c);
+                            Some(Action::SetInput(new_input))
+                        }
+                        KeyCode::Backspace => Some(Action::Backspace),
+                        _ => None,
+                    }
+                }
+                OnboardingMode::CreatePassword | OnboardingMode::EnterPassword => {
+                    match key.code {
+                        KeyCode::Enter if !input.is_empty() => {
+                            Some(Action::SetPassword(input.clone()))
+                        }
+                        KeyCode::Char(c) => {
+                            let mut new_input = input.clone();
+                            new_input.push(c);
+                            Some(Action::SetInput(new_input))
+                        }
+                        KeyCode::Backspace => Some(Action::Backspace),
+                        _ => None,
+                    }
+                }
+                OnboardingMode::GenerateNew => {
+                    // GenerateNew mode is just a transition state, no input handling needed
+                    None
+                }
             }
         }
-        _ => {}
+        AppState::Ready { .. } => {
+            // Navigation keys
+            if key.modifiers == KeyModifiers::NONE {
+                match key.code {
+                    KeyCode::Up => Some(Action::PrevGroup),
+                    KeyCode::Down => Some(Action::NextGroup),
+                    KeyCode::PageUp => Some(Action::ScrollUp),
+                    KeyCode::PageDown => Some(Action::ScrollDown),
+                    KeyCode::Char(c) => {
+                        // In ready state, typing starts a new input
+                        Some(Action::SetInput(c.to_string()))
+                    }
+                    KeyCode::Backspace => Some(Action::Backspace),
+                    KeyCode::Enter => {
+                        // Process current input as a command
+                        Some(Action::SendMessage(String::new()))
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+        _ => None,
     }
-    Ok(())
-}
-
-async fn handle_ready_key(nrc: &mut Nrc, key: KeyEvent) -> Result<()> {
-    if nrc.show_help && !nrc.help_explicitly_requested {
-        nrc.dismiss_help();
-        return Ok(());
-    }
-    
-    match key.code {
-        KeyCode::Enter if !nrc.input.is_empty() => {
-            let input = nrc.input.clone();
-            nrc.input.clear();
-            let _ = nrc.process_input(input).await;
-        }
-        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-            nrc.input.push(c);
-        }
-        KeyCode::Backspace => { nrc.input.pop(); }
-        KeyCode::Tab => nrc.next_group(),
-        KeyCode::BackTab => nrc.prev_group(),
-        _ => {}
-    }
-    Ok(())
-}
-
-async fn handle_onboarding_choice(nrc: &mut Nrc, choice: OnboardingChoice) -> Result<()> {
-    match choice {
-        OnboardingChoice::GenerateNew => {
-            nrc.state = AppState::Onboarding {
-                input: String::new(),
-                mode: OnboardingMode::EnterDisplayName,
-            };
-        }
-        OnboardingChoice::ImportExisting => {
-            nrc.state = AppState::Onboarding {
-                input: String::new(),
-                mode: OnboardingMode::ImportExisting,
-            };
-        }
-        OnboardingChoice::Continue => {
-            // Handle multi-step onboarding continuation
-        }
-    }
-    Ok(())
 }

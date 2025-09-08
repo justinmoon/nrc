@@ -4,21 +4,20 @@ mod tui;
 use anyhow::Result;
 use clap::Parser;
 use crossterm::{
-    event::{DisableBracketedPaste, EnableBracketedPaste, KeyCode, KeyEvent, KeyModifiers},
+    event::{DisableBracketedPaste, EnableBracketedPaste},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use nrc::actions::Action;
-use nrc::evented_nrc::{EventedNrc, EventLoop};
-use nrc::AppState;
+use nrc::evented_nrc::{EventedNrc, convert_key_to_action};
 use ratatui::{backend::CrosstermBackend, Terminal};
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io;
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 use tokio::time::Duration;
 
-fn default_data_dir() -> PathBuf {
+fn default_data_dir() -> String {
     #[cfg(target_os = "macos")]
     {
         dirs::home_dir()
@@ -26,75 +25,76 @@ fn default_data_dir() -> PathBuf {
             .join("Library")
             .join("Application Support")
             .join("nrc")
+            .to_string_lossy()
+            .to_string()
     }
     #[cfg(target_os = "linux")]
     {
-        dirs::data_dir()
-            .unwrap_or_else(|| {
-                dirs::home_dir()
-                    .expect("Failed to get home directory")
-                    .join(".local")
-                    .join("share")
-            })
+        dirs::home_dir()
+            .expect("Failed to get home directory")
+            .join(".local")
+            .join("share")
             .join("nrc")
+            .to_string_lossy()
+            .to_string()
     }
 }
 
-#[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
-struct Args {
-    /// Data directory for logs and other files
-    #[arg(long, value_parser, default_value_os_t = default_data_dir())]
-    datadir: PathBuf,
+fn default_log_level() -> String {
+    "info".to_string()
 }
 
-fn setup_logging(datadir: &PathBuf) -> Result<()> {
-    use env_logger::Builder;
-    use log::LevelFilter;
-    use std::io::Write;
+#[derive(Parser, Debug)]
+#[command(name = "nrc", about = "Secure group chat", version)]
+struct Args {
+    /// Path to the data directory
+    #[arg(long, default_value_t = default_data_dir())]
+    datadir: String,
 
-    // Create datadir if it doesn't exist
-    fs::create_dir_all(datadir)?;
-
-    // Use nrc.log in the datadir
-    let log_path = datadir.join("nrc.log");
-
-    let file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(&log_path)?;
-
-    println!("Logging to: {}", log_path.display());
-
-    Builder::new()
-        .target(env_logger::Target::Pipe(Box::new(file)))
-        .filter_level(LevelFilter::Debug)
-        .format(|buf, record| {
-            writeln!(
-                buf,
-                "[{} {} {}:{}] {}",
-                chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
-                record.level(),
-                record.file().unwrap_or("unknown"),
-                record.line().unwrap_or(0),
-                record.args()
-            )
-        })
-        .init();
-
-    Ok(())
+    /// Log level (trace, debug, info, warn, error)
+    #[arg(long, default_value_t = default_log_level())]
+    log_level: String,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    setup_logging(&args.datadir)?;
-    log::info!("Starting NRC with datadir: {:?}", args.datadir);
+    // Ensure data directory exists
+    let datadir = PathBuf::from(&args.datadir);
+    fs::create_dir_all(&datadir)?;
 
-    // Create EventedNrc and EventLoop
-    let (evented, event_loop) = EventedNrc::new(&args.datadir).await?;
+    // Initialize logging
+    let log_file = datadir.join("nrc.log");
+    
+    // Configure env_logger with custom format
+    use std::io::Write;
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(&args.log_level))
+        .format(|buf, record| {
+            writeln!(
+                buf,
+                "[{} {} {}:{}] {}",
+                chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3fZ"),
+                record.level(),
+                record.file().unwrap_or("unknown"),
+                record.line().unwrap_or(0),
+                record.args()
+            )
+        })
+        .target(env_logger::Target::Pipe(Box::new(
+            OpenOptions::new()
+                .create(true)
+                .write(true)
+                .append(true)
+                .open(&log_file)
+                .expect("Failed to open log file"),
+        )))
+        .init();
+
+    log::info!("Starting nrc with data directory: {:?}", datadir);
+
+    // Create EventedNrc with background processing
+    let evented = EventedNrc::new(&datadir).await?;
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -102,7 +102,7 @@ async fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let res = run_app(&mut terminal, evented, event_loop).await;
+    let res = run_app(&mut terminal, evented).await;
 
     disable_raw_mode()?;
     execute!(
@@ -122,16 +122,12 @@ async fn main() -> Result<()> {
 async fn run_app<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     mut evented: EventedNrc,
-    mut event_loop: EventLoop,
 ) -> Result<()> {
     // Channel for keyboard events
     let (key_tx, mut key_rx) = mpsc::unbounded_channel();
     
     // Spawn keyboard listener
     keyboard::spawn_keyboard_listener(key_tx.clone());
-    
-    // TODO: Update notification handler to emit Actions
-    // For now, we'll handle notifications through the existing pattern
     
     // Main loop
     loop {
@@ -141,24 +137,20 @@ async fn run_app<B: ratatui::backend::Backend>(
         // Use tokio::select! to handle multiple async operations
         tokio::select! {
             // Check for state changes (efficient redraw)
-            _ = evented.state.changed() => {
+            _ = evented.ui_state.changed() => {
                 // State changed, will redraw on next loop iteration
             }
             
             // Handle keyboard input
             Some(key_event) = key_rx.recv() => {
                 // Convert key event to action and emit
-                if let Some(action) = convert_key_to_action(&evented, key_event) {
+                let state = evented.current_state();
+                if let Some(action) = convert_key_to_action(key_event, &state) {
                     if matches!(action, Action::Quit) {
                         return Ok(());
                     }
                     evented.emit(action);
                 }
-            }
-            
-            // Process events in the event loop
-            _ = event_loop.process_one() => {
-                // An action was processed
             }
             
             // Add a small timeout to prevent busy waiting
@@ -169,165 +161,4 @@ async fn run_app<B: ratatui::backend::Backend>(
     }
 }
 
-/// Convert keyboard events to Actions based on current state
-fn convert_key_to_action(evented: &EventedNrc, key: KeyEvent) -> Option<Action> {
-    // Emergency exit
-    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-        return Some(Action::Quit);
-    }
-    
-    let state = evented.state.borrow();
-    match &*state {
-        AppState::Onboarding { mode, .. } => {
-            use nrc::OnboardingMode;
-            match mode {
-                OnboardingMode::Choose => {
-                    match key.code {
-                        KeyCode::Char('1') => {
-                            Some(Action::OnboardingChoice(nrc::actions::OnboardingChoice::GenerateNew))
-                        }
-                        KeyCode::Char('2') => {
-                            Some(Action::OnboardingChoice(nrc::actions::OnboardingChoice::ImportExisting))
-                        }
-                        KeyCode::Esc => Some(Action::Quit),
-                        _ => None,
-                    }
-                }
-                OnboardingMode::EnterDisplayName => {
-                    match key.code {
-                        KeyCode::Char(c) => {
-                            let mut input = evented.input.borrow().clone();
-                            input.push(c);
-                            Some(Action::SetInput(input))
-                        }
-                        KeyCode::Backspace => {
-                            let mut input = evented.input.borrow().clone();
-                            input.pop();
-                            Some(Action::SetInput(input))
-                        }
-                        KeyCode::Enter if !evented.input.borrow().is_empty() => {
-                            let display_name = evented.input.borrow().clone();
-                            Some(Action::SetDisplayName(display_name))
-                        }
-                        KeyCode::Esc => {
-                            Some(Action::OnboardingChoice(nrc::actions::OnboardingChoice::GenerateNew))
-                        }
-                        _ => None,
-                    }
-                }
-                OnboardingMode::ImportExisting => {
-                    match key.code {
-                        KeyCode::Char(c) => {
-                            let mut input = evented.input.borrow().clone();
-                            input.push(c);
-                            Some(Action::SetInput(input))
-                        }
-                        KeyCode::Backspace => {
-                            let mut input = evented.input.borrow().clone();
-                            input.pop();
-                            Some(Action::SetInput(input))
-                        }
-                        KeyCode::Enter if !evented.input.borrow().is_empty() => {
-                            let nsec = evented.input.borrow().clone();
-                            Some(Action::SetNsec(nsec))
-                        }
-                        KeyCode::Esc => {
-                            Some(Action::OnboardingChoice(nrc::actions::OnboardingChoice::ImportExisting))
-                        }
-                        _ => None,
-                    }
-                }
-                OnboardingMode::CreatePassword | OnboardingMode::EnterPassword => {
-                    match key.code {
-                        KeyCode::Char(c) => {
-                            let mut input = evented.input.borrow().clone();
-                            input.push(c);
-                            Some(Action::SetInput(input))
-                        }
-                        KeyCode::Backspace => {
-                            let mut input = evented.input.borrow().clone();
-                            input.pop();
-                            Some(Action::SetInput(input))
-                        }
-                        KeyCode::Enter if !evented.input.borrow().is_empty() => {
-                            let password = evented.input.borrow().clone();
-                            Some(Action::SetPassword(password))
-                        }
-                        KeyCode::Esc => {
-                            // TODO: Handle going back in onboarding
-                            None
-                        }
-                        _ => None,
-                    }
-                }
-                _ => None,
-            }
-        }
-        AppState::Initializing => None,
-        AppState::Ready { .. } => {
-            // Check if help is showing
-            if *evented.show_help.borrow() {
-                return Some(Action::DismissHelp);
-            }
-            
-            let input = evented.input.borrow();
-            match key.code {
-                // Arrow keys for navigation (only when input is empty)
-                KeyCode::Up if input.is_empty() => Some(Action::PrevGroup),
-                KeyCode::Down if input.is_empty() => Some(Action::NextGroup),
-                // Ctrl+j/k for navigation
-                KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    Some(Action::NextGroup)
-                }
-                KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    Some(Action::PrevGroup)
-                }
-                // Regular character input
-                KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    let mut new_input = input.clone();
-                    new_input.push(c);
-                    Some(Action::SetInput(new_input))
-                }
-                KeyCode::Backspace => {
-                    let mut new_input = input.clone();
-                    new_input.pop();
-                    Some(Action::SetInput(new_input))
-                }
-                KeyCode::Enter if !input.is_empty() => {
-                    let input_str = input.clone();
-                    
-                    // Clear input first
-                    evented.emit(Action::ClearInput);
-                    
-                    // Check if it's a command
-                    if input_str.starts_with("/") {
-                        // Parse command
-                        let parts: Vec<&str> = input_str.split_whitespace().collect();
-                        if parts.is_empty() {
-                            return None;
-                        }
-                        
-                        match parts[0] {
-                            "/quit" | "/q" => Some(Action::Quit),
-                            "/npub" | "/n" => Some(Action::CopyNpub),
-                            "/help" | "/h" => Some(Action::ShowHelp),
-                            "/next" => Some(Action::NextGroup),
-                            "/prev" => Some(Action::PrevGroup),
-                            "/join" | "/j" if parts.len() > 1 => {
-                                Some(Action::JoinGroup(parts[1].to_string()))
-                            }
-                            _ => {
-                                // Unknown command, already cleared input
-                                None
-                            }
-                        }
-                    } else {
-                        // Regular message
-                        Some(Action::SendMessage(input_str))
-                    }
-                }
-                _ => None,
-            }
-        }
-    }
-}
+use std::fs::OpenOptions;

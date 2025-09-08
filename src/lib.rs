@@ -133,7 +133,7 @@ pub struct Nrc {
     pub flash_message: Option<String>,
     pub show_help: bool,
     pub help_explicitly_requested: bool,
-    profiles: HashMap<PublicKey, Metadata>,
+    pub profiles: HashMap<PublicKey, Metadata>,
     pub event_tx: Option<mpsc::UnboundedSender<AppEvent>>,
     pub command_tx: Option<mpsc::Sender<NetworkCommand>>,
     key_storage: KeyStorage,

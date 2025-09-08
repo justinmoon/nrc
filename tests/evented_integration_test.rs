@@ -1,6 +1,6 @@
 use anyhow::Result;
 use nrc::actions::{Action, OnboardingChoice};
-use nrc::evented_nrc::{EventedNrc, EventLoop};
+use nrc::evented_nrc::EventedNrc;
 use nrc::AppState;
 use nostr_sdk::prelude::*;
 use std::path::PathBuf;
@@ -10,7 +10,6 @@ use tokio::time::sleep;
 /// Test client wrapper for EventedNrc - follows the same pattern as the UI
 pub struct EventedTestClient {
     pub evented: EventedNrc,
-    pub event_loop: EventLoop,
     pub temp_dir: PathBuf,
     pub name: String,
 }
@@ -22,39 +21,22 @@ impl EventedTestClient {
         let _ = std::fs::remove_dir_all(&temp_dir);
         std::fs::create_dir_all(&temp_dir)?;
 
-        // Create EventedNrc and EventLoop
-        let (evented, event_loop) = EventedNrc::new(&temp_dir).await?;
+        // Create EventedNrc with background processing
+        let evented = EventedNrc::new(&temp_dir).await?;
 
         Ok(Self {
             evented,
-            event_loop,
             temp_dir,
             name: name.to_string(),
         })
     }
 
-    /// Process events until we get a response (mimics the UI event loop)
-    pub async fn process_events(&mut self, max_iterations: usize) -> Result<()> {
-        let mut count = 0;
-        println!("🔄 {} starting process_events (max: {})", self.name, max_iterations);
-        
-        // Process all available actions with iteration limit
-        while count < max_iterations {
-            if let Some(_) = self.event_loop.process_one().await {
-                count += 1;
-                println!("🔄 {} processed action #{}/{}", self.name, count, max_iterations);
-            } else {
-                // No more actions to process
-                break;
-            }
-        }
-        
-        if count >= max_iterations {
-            println!("⚠️  {} hit max iterations limit: {}", self.name, max_iterations);
-        } else {
-            println!("✅ {} finished processing {} actions", self.name, count);
-        }
-        
+    /// Wait for events to be processed (background thread handles it)
+    pub async fn wait_for_processing(&mut self) -> Result<()> {
+        println!("🔄 {} waiting for background processing...", self.name);
+        // Give the background thread time to process events
+        sleep(Duration::from_millis(100)).await;
+        println!("✅ {} processing wait complete", self.name);
         Ok(())
     }
 
@@ -66,7 +48,7 @@ impl EventedTestClient {
         println!("✅ Initial state reached, choosing GenerateNew...");
         // Choose to generate new keys (option 1)
         self.evented.emit(Action::OnboardingChoice(OnboardingChoice::GenerateNew));
-        self.process_events(5).await?;
+        self.wait_for_processing().await?;
 
         println!("🔄 Waiting for EnterDisplayName mode...");
         self.wait_for_display_name_mode().await?;
@@ -74,7 +56,7 @@ impl EventedTestClient {
         println!("✅ EnterDisplayName mode reached, setting display name...");
         // Enter display name - this should advance to CreatePassword mode
         self.evented.emit(Action::SetDisplayName(self.name.clone()));
-        self.process_events(5).await?;
+        self.wait_for_processing().await?;
 
         println!("🔄 Waiting for CreatePassword mode...");
         self.wait_for_create_password_mode().await?;
@@ -83,7 +65,7 @@ impl EventedTestClient {
         // Enter password
         let password = format!("password_{}", self.name);
         self.evented.emit(Action::SetPassword(password));
-        self.process_events(15).await?;
+        self.wait_for_processing().await?;
 
         println!("🔄 Waiting for Ready state...");
         // Wait for initialization to complete
@@ -95,7 +77,7 @@ impl EventedTestClient {
 
     async fn wait_for_onboarding_state(&self) -> Result<()> {
         for _ in 0..50 {
-            if matches!(*self.evented.state.borrow(), AppState::Onboarding { .. }) {
+            if matches!(self.evented.ui_state.borrow().app_state, AppState::Onboarding { .. }) {
                 return Ok(());
             }
             sleep(Duration::from_millis(100)).await;
@@ -105,12 +87,12 @@ impl EventedTestClient {
 
     async fn wait_for_display_name_mode(&mut self) -> Result<()> {
         for _ in 0..50 {
-            if let AppState::Onboarding { mode, .. } = &*self.evented.state.borrow() {
+            if let AppState::Onboarding { mode, .. } = &self.evented.ui_state.borrow().app_state {
                 if matches!(mode, nrc::OnboardingMode::EnterDisplayName) {
                     return Ok(());
                 }
             }
-            self.process_events(2).await?;
+            self.wait_for_processing().await?;
             sleep(Duration::from_millis(100)).await;
         }
         anyhow::bail!("Never reached EnterDisplayName mode")
@@ -118,12 +100,12 @@ impl EventedTestClient {
 
     async fn wait_for_create_password_mode(&mut self) -> Result<()> {
         for _ in 0..50 {
-            if let AppState::Onboarding { mode, .. } = &*self.evented.state.borrow() {
+            if let AppState::Onboarding { mode, .. } = &self.evented.ui_state.borrow().app_state {
                 if matches!(mode, nrc::OnboardingMode::CreatePassword) {
                     return Ok(());
                 }
             }
-            self.process_events(2).await?;
+            self.wait_for_processing().await?;
             sleep(Duration::from_millis(100)).await;
         }
         anyhow::bail!("Never reached CreatePassword mode")
@@ -131,10 +113,10 @@ impl EventedTestClient {
 
     async fn wait_for_ready_state(&mut self) -> Result<()> {
         for _ in 0..100 { // Wait up to 10 seconds
-            if matches!(*self.evented.state.borrow(), AppState::Ready { .. }) {
+            if matches!(self.evented.ui_state.borrow().app_state, AppState::Ready { .. }) {
                 return Ok(());
             }
-            self.process_events(2).await?;
+            self.wait_for_processing().await?;
             sleep(Duration::from_millis(100)).await;
         }
         anyhow::bail!("Never reached ready state")
@@ -150,10 +132,10 @@ impl EventedTestClient {
         println!("📊 {} current group count BEFORE join: {}", self.name, self.group_count());
         
         self.evented.emit(Action::JoinGroup(other_npub.to_string()));
-        self.process_events(20).await?;
+        self.wait_for_processing().await?;
         
         println!("📊 {} group count AFTER join: {}", self.name, self.group_count());
-        println!("🔍 {} current state: {:?}", self.name, *self.evented.state.borrow());
+        println!("🔍 {} current state: {:?}", self.name, self.evented.ui_state.borrow().app_state);
         
         Ok(())
     }
@@ -161,13 +143,13 @@ impl EventedTestClient {
     /// Send a message like the UI would
     pub async fn send_message(&mut self, content: &str) -> Result<()> {
         self.evented.emit(Action::SendMessage(content.to_string()));
-        self.process_events(10).await?;
+        self.wait_for_processing().await?;
         Ok(())
     }
 
     /// Get current group count
     pub fn group_count(&self) -> usize {
-        if let AppState::Ready { groups, .. } = &*self.evented.state.borrow() {
+        if let AppState::Ready { groups, .. } = &self.evented.ui_state.borrow().app_state {
             groups.len()
         } else {
             0
@@ -177,14 +159,14 @@ impl EventedTestClient {
     /// Get messages for the first group (if any)
     pub fn get_first_group_messages(&self) -> Vec<nrc::Message> {
         if let Some(group_id) = self.get_first_group_id() {
-            self.evented.messages.borrow().get(&group_id).cloned().unwrap_or_default()
+            self.evented.ui_state.borrow().messages.get(&group_id).cloned().unwrap_or_default()
         } else {
             Vec::new()
         }
     }
 
     fn get_first_group_id(&self) -> Option<openmls::group::GroupId> {
-        if let AppState::Ready { groups, .. } = &*self.evented.state.borrow() {
+        if let AppState::Ready { groups, .. } = &self.evented.ui_state.borrow().app_state {
             groups.first().cloned()
         } else {
             None
@@ -194,7 +176,7 @@ impl EventedTestClient {
     /// Trigger manual message fetching (simulates periodic fetch)
     pub async fn trigger_fetch_messages(&mut self) -> Result<()> {
         self.evented.emit(Action::FetchMessages);
-        self.process_events(10).await?;
+        self.wait_for_processing().await?;
         Ok(())
     }
 
@@ -204,10 +186,10 @@ impl EventedTestClient {
         println!("📊 {} current group count BEFORE: {}", self.name, self.group_count());
         
         self.evented.emit(Action::FetchWelcomes);
-        self.process_events(10).await?;
+        self.wait_for_processing().await?;
         
         println!("📊 {} group count AFTER FetchWelcomes: {}", self.name, self.group_count());
-        println!("🔍 {} current state: {:?}", self.name, *self.evented.state.borrow());
+        println!("🔍 {} current state: {:?}", self.name, self.evented.ui_state.borrow().app_state);
         
         Ok(())
     }
@@ -218,18 +200,18 @@ impl EventedTestClient {
         for _ in 0..self.group_count() {
             self.evented.emit(Action::PrevGroup);
         }
-        self.process_events(5).await?;
+        self.wait_for_processing().await?;
         Ok(())
     }
 
     /// Get current state for debugging
     pub fn debug_state(&self) -> String {
-        format!("{:?}", *self.evented.state.borrow())
+        format!("{:?}", self.evented.ui_state.borrow().app_state)
     }
 
     /// Check if there's an error
     pub fn get_last_error(&self) -> Option<String> {
-        self.evented.last_error.borrow().clone()
+        self.evented.ui_state.borrow().last_error.clone()
     }
 }
 
@@ -283,7 +265,7 @@ async fn test_evented_two_account_dm_flow() -> Result<()> {
     
     // Trigger welcome processing for Alice
     alice.trigger_fetch_welcomes().await?;
-    alice.process_events(20).await?;
+    alice.wait_for_processing().await?;
 
     // Alice should now have joined the group
     let alice_group_count = alice.group_count();
@@ -310,7 +292,7 @@ async fn test_evented_two_account_dm_flow() -> Result<()> {
 
     // Alice fetches messages
     alice.trigger_fetch_messages().await?;
-    alice.process_events(20).await?;
+    alice.wait_for_processing().await?;
 
     // Check Alice received Bob's message
     let alice_messages = alice.get_first_group_messages();
@@ -336,7 +318,7 @@ async fn test_evented_two_account_dm_flow() -> Result<()> {
 
     // Bob fetches messages
     bob.trigger_fetch_messages().await?;
-    bob.process_events(20).await?;
+    bob.wait_for_processing().await?;
 
     // Check Bob received Alice's reply
     let bob_messages = bob.get_first_group_messages();

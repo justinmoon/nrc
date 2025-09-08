@@ -1,5 +1,5 @@
 use nostr_sdk::prelude::ToBech32;
-use nrc::evented_nrc::EventedNrc;
+use nrc::evented_nrc::{EventedNrc, UIState};
 use nrc::{AppState, OnboardingMode};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -16,19 +16,17 @@ pub fn draw_evented(f: &mut Frame, evented: &EventedNrc) {
         .constraints([Constraint::Min(0)])
         .split(f.area());
 
-    let state = evented.state.borrow();
-    let input = evented.input.borrow();
-    let last_error = evented.last_error.borrow();
+    let ui_state = evented.ui_state.borrow();
     
-    match &*state {
-        AppState::Onboarding { mode, .. } => {
-            draw_onboarding(f, chunks[0], &input, mode, last_error.as_deref());
+    match &ui_state.app_state {
+        AppState::Onboarding { mode, input } => {
+            draw_onboarding(f, chunks[0], input, mode, ui_state.last_error.as_deref());
         }
         AppState::Initializing => {
             draw_initializing(f, chunks[0]);
         }
         AppState::Ready { groups, .. } => {
-            draw_ready_view_evented(f, chunks[0], evented, groups);
+            draw_ready_view_with_state(f, chunks[0], &ui_state, &evented.npub, groups);
         }
     }
 }
@@ -382,14 +380,15 @@ fn draw_initializing(f: &mut Frame, area: Rect) {
     f.render_widget(paragraph, inner);
 }
 
-fn draw_ready_view_evented(
+fn draw_ready_view_with_state(
     f: &mut Frame,
     area: Rect,
-    evented: &EventedNrc,
+    ui_state: &UIState,
+    npub: &str,
     groups: &[openmls::group::GroupId],
 ) {
     // Show help overlay if active
-    if *evented.show_help.borrow() {
+    if ui_state.show_help {
         draw_help_overlay(f, area);
         return;
     }
@@ -405,7 +404,7 @@ fn draw_ready_view_evented(
         .border_type(BorderType::Double)
         .border_style(Style::default().fg(Color::DarkGray));
 
-    let selected_index = *evented.selected_group_index.borrow();
+    let selected_index = ui_state.selected_group_index;
     let items: Vec<ListItem> = if groups.is_empty() {
         vec![ListItem::new("No chats yet").style(Style::default().fg(Color::DarkGray))]
     } else {
@@ -413,8 +412,10 @@ fn draw_ready_view_evented(
             .iter()
             .enumerate()
             .map(|(i, group)| {
-                // Get the display name for this chat
-                let display_name = evented.get_group_display_name(group);
+                // Get the display name for this chat from groups metadata
+                let display_name = ui_state.groups.get(group)
+                    .map(|g| g.name.clone())
+                    .unwrap_or_else(|| format!("Chat {}", i + 1));
                 ListItem::new(display_name).style(if selected_index == Some(i) {
                     Style::default()
                         .fg(Color::Yellow)
@@ -430,8 +431,7 @@ fn draw_ready_view_evented(
     f.render_widget(list, chunks[0]);
 
     // Handle right side layout based on whether there's an error
-    let last_error = evented.last_error.borrow();
-    if let Some(ref error) = *last_error {
+    if let Some(ref error) = ui_state.last_error {
         // Calculate how many lines the error needs (with wrapping)
         let available_width = chunks[1].width.saturating_sub(4) as usize; // Subtract borders and padding
         let estimated_lines = if available_width > 0 {
@@ -452,23 +452,23 @@ fn draw_ready_view_evented(
             .split(chunks[1]);
 
         // Check if a chat is selected for the top area
-        if let Some(selected_index) = *evented.selected_group_index.borrow() {
+        if let Some(selected_index) = ui_state.selected_group_index {
             if selected_index < groups.len() {
                 // Show messages for the selected chat
                 let selected_group = &groups[selected_index];
-                draw_messages_evented(f, right_chunks[0], evented, selected_group);
+                draw_messages_with_state(f, right_chunks[0], ui_state, npub, selected_group);
             } else {
                 // Selected index out of bounds, show appropriate content
-                if should_show_help_message_evented(evented, groups) {
-                    draw_info_panel_evented(f, right_chunks[0], evented);
+                if should_show_help_message_with_state(ui_state, groups) {
+                    draw_info_panel_with_state(f, right_chunks[0], ui_state, npub);
                 } else {
                     draw_empty_chat_area(f, right_chunks[0]);
                 }
             }
         } else {
             // No chat selected, show appropriate content
-            if should_show_help_message_evented(evented, groups) {
-                draw_info_panel_evented(f, right_chunks[0], evented);
+            if should_show_help_message_with_state(ui_state, groups) {
+                draw_info_panel_with_state(f, right_chunks[0], ui_state, npub);
             } else {
                 draw_empty_chat_area(f, right_chunks[0]);
             }
@@ -489,7 +489,7 @@ fn draw_ready_view_evented(
         f.render_widget(error_text, right_chunks[1]);
 
         // Draw input box
-        draw_input_evented(f, right_chunks[2], evented);
+        draw_input_with_state(f, right_chunks[2], ui_state);
     } else {
         // No error - use standard layout
         // Split right side for content and input (3 lines for input box)
@@ -499,37 +499,38 @@ fn draw_ready_view_evented(
             .split(chunks[1]);
 
         // Check if a chat is selected
-        if let Some(selected_index) = *evented.selected_group_index.borrow() {
+        if let Some(selected_index) = ui_state.selected_group_index {
             if selected_index < groups.len() {
                 // Show messages for the selected chat
                 let selected_group = &groups[selected_index];
-                draw_messages_evented(f, right_chunks[0], evented, selected_group);
+                draw_messages_with_state(f, right_chunks[0], ui_state, npub, selected_group);
             } else {
                 // Selected index out of bounds, show appropriate content
-                if should_show_help_message_evented(evented, groups) {
-                    draw_info_panel_evented(f, right_chunks[0], evented);
+                if should_show_help_message_with_state(ui_state, groups) {
+                    draw_info_panel_with_state(f, right_chunks[0], ui_state, npub);
                 } else {
                     draw_empty_chat_area(f, right_chunks[0]);
                 }
             }
         } else {
             // No chat selected, show appropriate content
-            if should_show_help_message_evented(evented, groups) {
-                draw_info_panel_evented(f, right_chunks[0], evented);
+            if should_show_help_message_with_state(ui_state, groups) {
+                draw_info_panel_with_state(f, right_chunks[0], ui_state, npub);
             } else {
                 draw_empty_chat_area(f, right_chunks[0]);
             }
         }
 
         // Draw input box with optional flash message
-        draw_input_with_flash_evented(f, right_chunks[1], evented);
+        draw_input_with_flash_with_state(f, right_chunks[1], ui_state);
     }
 }
 
-fn draw_messages_evented(
+fn draw_messages_with_state(
     f: &mut Frame,
     area: Rect,
-    evented: &EventedNrc,
+    ui_state: &UIState,
+    npub: &str,
     active_group: &openmls::group::GroupId,
 ) {
     let block = Block::default()
@@ -538,7 +539,7 @@ fn draw_messages_evented(
         .border_type(BorderType::Double)
         .border_style(Style::default().fg(Color::DarkGray));
 
-    let messages = evented.messages.borrow();
+    let messages = &ui_state.messages;
     let group_messages = messages.get(active_group);
 
     let content: Vec<Line> = if group_messages.is_none() || group_messages.unwrap().is_empty() {
@@ -564,7 +565,7 @@ fn draw_messages_evented(
                 
                 // Use different colors for different users
                 // Current user gets green, others get cyan
-                let our_npub = &evented.npub;
+                let our_npub = npub;
                 let sender_npub = msg.sender.to_bech32().unwrap_or_default();
                 let color = if sender_npub == *our_npub {
                     Color::Green
@@ -587,14 +588,14 @@ fn draw_messages_evented(
     f.render_widget(paragraph, area);
 }
 
-fn draw_input_evented(f: &mut Frame, area: Rect, evented: &EventedNrc) {
+fn draw_input_with_state(f: &mut Frame, area: Rect, ui_state: &UIState) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::DarkGray))
         .title("═ INPUT ═");
 
-    let input = evented.input.borrow();
+    let input = &ui_state.input;
     // Create text with a cursor using spans
     let text = vec![Line::from(vec![
         Span::raw(input.as_str()),
@@ -613,9 +614,8 @@ fn draw_input_evented(f: &mut Frame, area: Rect, evented: &EventedNrc) {
     f.render_widget(input_widget, area);
 }
 
-fn draw_input_with_flash_evented(f: &mut Frame, area: Rect, evented: &EventedNrc) {
-    let flash_message = evented.flash_message.borrow();
-    if let Some(ref msg) = *flash_message {
+fn draw_input_with_flash_with_state(f: &mut Frame, area: Rect, ui_state: &UIState) {
+    if let Some(ref msg) = ui_state.flash_message {
         // Split area for flash message and input
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -629,14 +629,14 @@ fn draw_input_with_flash_evented(f: &mut Frame, area: Rect, evented: &EventedNrc
         f.render_widget(flash, chunks[0]);
 
         // Draw input
-        draw_input_evented(f, chunks[1], evented);
+        draw_input_with_state(f, chunks[1], ui_state);
     } else {
         // No flash message, just draw input
-        draw_input_evented(f, area, evented);
+        draw_input_with_state(f, area, ui_state);
     }
 }
 
-fn draw_info_panel_evented(f: &mut Frame, area: Rect, evented: &EventedNrc) {
+fn draw_info_panel_with_state(f: &mut Frame, area: Rect, _ui_state: &UIState, npub: &str) {
     let info_block = Block::default()
         .title("═══ INFO ═══")
         .borders(Borders::ALL)
@@ -647,7 +647,7 @@ fn draw_info_panel_evented(f: &mut Frame, area: Rect, evented: &EventedNrc) {
         Line::from(""),
         Line::from(vec![
             Span::styled("NPUB: ", Style::default().fg(Color::Yellow)),
-            Span::raw(&evented.npub),
+            Span::raw(npub),
         ]),
         Line::from(""),
         Line::from(vec![Span::styled(
@@ -693,7 +693,7 @@ fn draw_info_panel_evented(f: &mut Frame, area: Rect, evented: &EventedNrc) {
     f.render_widget(paragraph, area);
 }
 
-fn should_show_help_message_evented(_evented: &EventedNrc, groups: &[openmls::group::GroupId]) -> bool {
+fn should_show_help_message_with_state(_ui_state: &UIState, groups: &[openmls::group::GroupId]) -> bool {
     // Show help if no groups exist
     groups.is_empty()
 }
