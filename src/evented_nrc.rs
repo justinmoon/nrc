@@ -375,10 +375,18 @@ async fn process_action(
             };
         }
         Action::FetchMessages => {
-            let _ = nrc.fetch_and_process_messages().await;
+            log::debug!("📨 FETCH_MESSAGES: Starting fetch");
+            match nrc.fetch_and_process_messages().await {
+                Ok(_) => log::debug!("📨 FETCH_MESSAGES: Success"),
+                Err(e) => log::error!("📨 FETCH_MESSAGES: Error: {}", e),
+            }
         }
         Action::FetchWelcomes => {
-            let _ = nrc.fetch_and_process_welcomes().await;
+            log::debug!("📥 FETCH_WELCOMES: Starting fetch");
+            match nrc.fetch_and_process_welcomes().await {
+                Ok(_) => log::debug!("📥 FETCH_WELCOMES: Success"),
+                Err(e) => log::error!("📥 FETCH_WELCOMES: Error: {}", e),
+            }
         }
         Action::NostrEventReceived(event) => {
             // Process incoming nostr events

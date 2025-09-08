@@ -4,15 +4,13 @@ use nrc::evented_nrc::{EventedNrc, EventLoop};
 use nrc::AppState;
 use nostr_sdk::prelude::*;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
 use tokio::time::sleep;
 
 /// Test client wrapper for EventedNrc - follows the same pattern as the UI
 pub struct EventedTestClient {
     pub evented: EventedNrc,
-    pub event_loop: Arc<Mutex<EventLoop>>,
+    pub event_loop: EventLoop,
     pub temp_dir: PathBuf,
     pub name: String,
 }
@@ -29,24 +27,39 @@ impl EventedTestClient {
 
         Ok(Self {
             evented,
-            event_loop: Arc::new(Mutex::new(event_loop)),
+            event_loop,
             temp_dir,
             name: name.to_string(),
         })
     }
 
     /// Process events until we get a response (mimics the UI event loop)
-    pub async fn process_events(&self, _max_iterations: usize) -> Result<()> {
-        let mut loop_guard = self.event_loop.lock().await;
-        // Process all available actions
-        while loop_guard.process_one().await.is_some() {
-            // Keep processing until no more actions
+    pub async fn process_events(&mut self, max_iterations: usize) -> Result<()> {
+        let mut count = 0;
+        println!("🔄 {} starting process_events (max: {})", self.name, max_iterations);
+        
+        // Process all available actions with iteration limit
+        while count < max_iterations {
+            if let Some(_) = self.event_loop.process_one().await {
+                count += 1;
+                println!("🔄 {} processed action #{}/{}", self.name, count, max_iterations);
+            } else {
+                // No more actions to process
+                break;
+            }
         }
+        
+        if count >= max_iterations {
+            println!("⚠️  {} hit max iterations limit: {}", self.name, max_iterations);
+        } else {
+            println!("✅ {} finished processing {} actions", self.name, count);
+        }
+        
         Ok(())
     }
 
     /// Complete onboarding flow by emitting actions like the UI would
-    pub async fn complete_onboarding(&self) -> Result<()> {
+    pub async fn complete_onboarding(&mut self) -> Result<()> {
         println!("🔄 Waiting for initial onboarding state...");
         self.wait_for_onboarding_state().await?;
 
@@ -90,7 +103,7 @@ impl EventedTestClient {
         anyhow::bail!("Never reached onboarding state")
     }
 
-    async fn wait_for_display_name_mode(&self) -> Result<()> {
+    async fn wait_for_display_name_mode(&mut self) -> Result<()> {
         for _ in 0..50 {
             if let AppState::Onboarding { mode, .. } = &*self.evented.state.borrow() {
                 if matches!(mode, nrc::OnboardingMode::EnterDisplayName) {
@@ -103,7 +116,7 @@ impl EventedTestClient {
         anyhow::bail!("Never reached EnterDisplayName mode")
     }
 
-    async fn wait_for_create_password_mode(&self) -> Result<()> {
+    async fn wait_for_create_password_mode(&mut self) -> Result<()> {
         for _ in 0..50 {
             if let AppState::Onboarding { mode, .. } = &*self.evented.state.borrow() {
                 if matches!(mode, nrc::OnboardingMode::CreatePassword) {
@@ -116,7 +129,7 @@ impl EventedTestClient {
         anyhow::bail!("Never reached CreatePassword mode")
     }
 
-    async fn wait_for_ready_state(&self) -> Result<()> {
+    async fn wait_for_ready_state(&mut self) -> Result<()> {
         for _ in 0..100 { // Wait up to 10 seconds
             if matches!(*self.evented.state.borrow(), AppState::Ready { .. }) {
                 return Ok(());
@@ -132,14 +145,21 @@ impl EventedTestClient {
     }
 
     /// Send a /join command like the UI would
-    pub async fn join_chat_with(&self, other_npub: &str) -> Result<()> {
+    pub async fn join_chat_with(&mut self, other_npub: &str) -> Result<()> {
+        println!("🔗 {} joining chat with {}", self.name, other_npub);
+        println!("📊 {} current group count BEFORE join: {}", self.name, self.group_count());
+        
         self.evented.emit(Action::JoinGroup(other_npub.to_string()));
         self.process_events(20).await?;
+        
+        println!("📊 {} group count AFTER join: {}", self.name, self.group_count());
+        println!("🔍 {} current state: {:?}", self.name, *self.evented.state.borrow());
+        
         Ok(())
     }
 
     /// Send a message like the UI would
-    pub async fn send_message(&self, content: &str) -> Result<()> {
+    pub async fn send_message(&mut self, content: &str) -> Result<()> {
         self.evented.emit(Action::SendMessage(content.to_string()));
         self.process_events(10).await?;
         Ok(())
@@ -172,21 +192,28 @@ impl EventedTestClient {
     }
 
     /// Trigger manual message fetching (simulates periodic fetch)
-    pub async fn trigger_fetch_messages(&self) -> Result<()> {
+    pub async fn trigger_fetch_messages(&mut self) -> Result<()> {
         self.evented.emit(Action::FetchMessages);
         self.process_events(10).await?;
         Ok(())
     }
 
     /// Trigger manual welcome fetching
-    pub async fn trigger_fetch_welcomes(&self) -> Result<()> {
+    pub async fn trigger_fetch_welcomes(&mut self) -> Result<()> {
+        println!("🔍 {} triggering FetchWelcomes", self.name);
+        println!("📊 {} current group count BEFORE: {}", self.name, self.group_count());
+        
         self.evented.emit(Action::FetchWelcomes);
         self.process_events(10).await?;
+        
+        println!("📊 {} group count AFTER FetchWelcomes: {}", self.name, self.group_count());
+        println!("🔍 {} current state: {:?}", self.name, *self.evented.state.borrow());
+        
         Ok(())
     }
 
     /// Select first group (navigate to it)
-    pub async fn select_first_group(&self) -> Result<()> {
+    pub async fn select_first_group(&mut self) -> Result<()> {
         // Emit navigation to first group
         for _ in 0..self.group_count() {
             self.evented.emit(Action::PrevGroup);
@@ -220,8 +247,8 @@ async fn test_evented_two_account_dm_flow() -> Result<()> {
     println!("🧪 Creating Alice and Bob test clients...");
     
     // Create two test clients
-    let alice = EventedTestClient::new("Alice").await?;
-    let bob = EventedTestClient::new("Bob").await?;
+    let mut alice = EventedTestClient::new("Alice").await?;
+    let mut bob = EventedTestClient::new("Bob").await?;
 
     println!("✅ Clients created");
     println!("🔄 Starting Alice's onboarding...");
