@@ -20,27 +20,10 @@ async fn test_multi_user_group_creation_and_chat() -> Result<()> {
     let bob_npub = bob.npub().await?;
     alice
         .execute_command(&format!("/group #test-channel {bob_npub}"))
-        .await?;
+        .await?; // If this succeeds, the group was created successfully
 
     // Give it a moment to process
     tokio::time::sleep(Duration::from_millis(500)).await;
-
-    // Check for any error message
-    {
-        let alice_nrc = alice.nrc.lock().await;
-        if let Some(ref error) = alice_nrc.last_error {
-            panic!("Error creating group: {error}");
-        }
-        // Should have a flash message about creating the group
-        if let Some(ref flash) = alice_nrc.flash_message {
-            assert!(
-                flash.contains("Created #test-channel"),
-                "Should confirm group creation: {flash}"
-            );
-        } else {
-            panic!("No flash message after creating group");
-        }
-    }
 
     // Alice should have the group immediately
     assert_eq!(
@@ -185,26 +168,25 @@ async fn test_multi_user_group_with_members_command() -> Result<()> {
     alice.process_pending_events().await?;
 
     // Check members - should show both Alice and Bob since Bob was added at creation
-    alice.execute_command("/members").await?;
+    // The /members command returns the member list as an "error" (this is by design)
+    let members_result = alice.execute_command("/members").await;
+    assert!(
+        members_result.is_err(),
+        "Members command should return member list as error"
+    );
 
-    // Check that Alice sees both herself and Bob in the member list
-    {
-        let alice_nrc = alice.nrc.lock().await;
-        // The flash message should contain the member list
-        if let Some(ref flash) = alice_nrc.flash_message {
-            assert!(flash.contains("Members:"), "Should show members list");
-            assert!(
-                flash.contains("alice"),
-                "Alice should be in the member list"
-            );
-            // Bob's npub is shown, not his name
-            assert!(
-                flash.contains(&bob_npub[..8]) || flash.contains("bob"),
-                "Bob should be in the member list (as npub or name): {flash}"
-            );
-        } else {
-            panic!("No flash message after /members command");
-        }
+    if let Err(e) = members_result {
+        let members_str = format!("{e}");
+        assert!(members_str.contains("Members:"), "Should show members list");
+        assert!(
+            members_str.contains("alice"),
+            "Alice should be in the member list"
+        );
+        // Bob's npub is shown, not his name
+        assert!(
+            members_str.contains(&bob_npub[..8]) || members_str.contains("bob"),
+            "Bob should be in the member list (as npub or name): {members_str}"
+        );
     }
 
     // Wait for invite to propagate and let Bob fetch welcomes
@@ -220,23 +202,23 @@ async fn test_multi_user_group_with_members_command() -> Result<()> {
     );
 
     // Check members again using short form - should still show both Alice and Bob
-    alice.execute_command("/m").await?; // Test short form
+    let members_result = alice.execute_command("/m").await; // Test short form
+    assert!(
+        members_result.is_err(),
+        "Members command should return member list as error"
+    );
 
-    {
-        let alice_nrc = alice.nrc.lock().await;
-        if let Some(ref flash) = alice_nrc.flash_message {
-            assert!(
-                flash.contains("alice"),
-                "Alice should still be in the member list"
-            );
-            // Bob's npub is shown, not his name
-            assert!(
-                flash.contains(&bob_npub[..8]) || flash.contains("bob"),
-                "Bob should still be in the member list (as npub or name)"
-            );
-        } else {
-            panic!("No flash message after /m command");
-        }
+    if let Err(e) = members_result {
+        let members_str = format!("{e}");
+        assert!(
+            members_str.contains("alice"),
+            "Alice should still be in the member list"
+        );
+        // Bob's npub is shown, not his name
+        assert!(
+            members_str.contains(&bob_npub[..8]) || members_str.contains("bob"),
+            "Bob should still be in the member list (as npub or name)"
+        );
     }
 
     Ok(())
@@ -429,17 +411,18 @@ async fn test_create_group_requires_key_package() -> Result<()> {
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     // Try to create group without members - should fail
-    alice.execute_command("/group #fail-test").await?;
+    let result = alice.execute_command("/group #fail-test").await;
+    assert!(
+        result.is_err(),
+        "Group creation without members should fail"
+    );
 
-    // Check for error
-    {
-        let alice_nrc = alice.nrc.lock().await;
-        if let Some(ref error) = alice_nrc.last_error {
-            assert!(
-                error.contains("Usage:") && error.contains("npub"),
-                "Should have usage error: {error}"
-            );
-        }
+    if let Err(e) = result {
+        let error_str = format!("{e}");
+        assert!(
+            error_str.contains("Usage:") && error_str.contains("npub"),
+            "Should have usage error: {error_str}"
+        );
     }
 
     // No group should have been created

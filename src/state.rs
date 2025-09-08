@@ -190,11 +190,6 @@ impl Nrc {
         Ok(())
     }
 
-    pub fn clear_error(&mut self) {
-        self.last_error = None;
-        self.flash_message = None;
-    }
-
     pub fn dismiss_help(&mut self) {
         self.show_help = false;
         self.help_explicitly_requested = false;

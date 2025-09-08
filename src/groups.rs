@@ -2,7 +2,7 @@ use crate::config::get_default_relays;
 use crate::types::AppState;
 use crate::utils::pubkey_to_bech32_safe;
 use crate::Nrc;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use nostr_sdk::prelude::*;
 use nrc_mls::groups::NostrGroupConfigData;
 use openmls::group::GroupId;
@@ -59,31 +59,21 @@ impl Nrc {
         // Fetch key packages for all members
         let mut key_packages = Vec::new();
         for pubkey in &member_pubkeys {
-            match self.fetch_key_package(pubkey).await {
-                Ok(kp) => key_packages.push(kp),
-                Err(e) => {
-                    self.last_error = Some(format!(
-                        "Failed to fetch key package for {}: {}",
-                        pubkey_to_bech32_safe(pubkey),
-                        e
-                    ));
-                    return Err(e);
-                }
-            }
+            let kp = self.fetch_key_package(pubkey).await.with_context(|| {
+                format!(
+                    "Failed to fetch key package for {}",
+                    pubkey_to_bech32_safe(pubkey)
+                )
+            })?;
+            key_packages.push(kp);
         }
 
         // Parse relay URLs
-        let relays: Result<Vec<RelayUrl>, _> = get_default_relays()
+        let relays: Vec<RelayUrl> = get_default_relays()
             .iter()
             .map(|&url| RelayUrl::parse(url))
-            .collect();
-        let relays = match relays {
-            Ok(r) => r,
-            Err(e) => {
-                self.last_error = Some(format!("Invalid relay URLs: {e}"));
-                return Err(e.into());
-            }
-        };
+            .collect::<Result<Vec<_>, _>>()
+            .context("Invalid relay URLs")?;
 
         let config = NostrGroupConfigData::new(
             channel_name.clone(),
@@ -96,68 +86,62 @@ impl Nrc {
         );
 
         // Create group with initial members
-        match self
+        let group_result = self
             .storage
             .create_group(&self.keys.public_key(), key_packages, config)
+            .context("Failed to create group")?;
+
+        let group_id = GroupId::from_slice(group_result.group.mls_group_id.as_slice());
+
+        self.groups
+            .insert(group_id.clone(), group_result.group.clone());
+
+        // Subscribe to messages for this group
+        let h_tag_value = hex::encode(group_result.group.nostr_group_id);
+        let filter = Filter::new()
+            .kind(Kind::from(445u16))
+            .custom_tag(SingleLetterTag::lowercase(Alphabet::H), h_tag_value)
+            .limit(100);
+        if let Err(e) = self.client.subscribe(filter, None).await {
+            log::warn!("Failed to subscribe to group messages: {e}");
+        }
+
+        if let AppState::Ready {
+            key_package_published,
+            mut groups,
+        } = self.state.clone()
         {
-            Ok(group_result) => {
-                let group_id = GroupId::from_slice(group_result.group.mls_group_id.as_slice());
+            groups.push(group_id.clone());
+            let new_index = groups.len() - 1;
+            self.state = AppState::Ready {
+                key_package_published,
+                groups,
+            };
+            // Set as selected group (most recently created)
+            self.selected_group_index = Some(new_index);
+        }
 
-                self.groups
-                    .insert(group_id.clone(), group_result.group.clone());
-
-                // Subscribe to messages for this group
-                let h_tag_value = hex::encode(group_result.group.nostr_group_id);
-                let filter = Filter::new()
-                    .kind(Kind::from(445u16))
-                    .custom_tag(SingleLetterTag::lowercase(Alphabet::H), h_tag_value)
-                    .limit(100);
-                if let Err(e) = self.client.subscribe(filter, None).await {
-                    log::warn!("Failed to subscribe to group messages: {e}");
-                }
-
-                if let AppState::Ready {
-                    key_package_published,
-                    mut groups,
-                } = self.state.clone()
-                {
-                    groups.push(group_id.clone());
-                    let new_index = groups.len() - 1;
-                    self.state = AppState::Ready {
-                        key_package_published,
-                        groups,
-                    };
-                    // Set as selected group (most recently created)
-                    self.selected_group_index = Some(new_index);
-                }
-
-                // Send welcomes to all members
-                for (pubkey, welcome_rumor) in member_pubkeys
-                    .iter()
-                    .zip(group_result.welcome_rumors.iter())
-                {
-                    if let Err(e) = self
-                        .send_gift_wrapped_welcome(pubkey, welcome_rumor.clone())
-                        .await
-                    {
-                        log::warn!(
-                            "Failed to send welcome to {}: {e}",
-                            pubkey_to_bech32_safe(pubkey)
-                        );
-                    }
-                }
-
-                self.flash_message = Some(format!(
-                    "Created #{channel_name} with {} members",
-                    member_pubkeys.len()
-                ));
-                Ok(())
-            }
-            Err(e) => {
-                self.last_error = Some(format!("Failed to create group: {e}"));
-                Err(e.into())
+        // Send welcomes to all members
+        for (pubkey, welcome_rumor) in member_pubkeys
+            .iter()
+            .zip(group_result.welcome_rumors.iter())
+        {
+            if let Err(e) = self
+                .send_gift_wrapped_welcome(pubkey, welcome_rumor.clone())
+                .await
+            {
+                log::warn!(
+                    "Failed to send welcome to {}: {e}",
+                    pubkey_to_bech32_safe(pubkey)
+                );
             }
         }
+
+        log::info!(
+            "Created #{channel_name} with {} members",
+            member_pubkeys.len()
+        );
+        Ok(())
     }
 
     pub async fn invite_to_group(
