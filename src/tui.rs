@@ -27,6 +27,62 @@ pub fn draw(f: &mut Frame, nrc: &Nrc) {
     }
 }
 
+/// Helper to draw password input field
+fn draw_password_input(
+    f: &mut Frame,
+    area: Rect,
+    prompt_lines: Vec<Line>,
+    input: &str,
+    help_text: Vec<Line>,
+) {
+    let prompt_len = prompt_lines.len();
+    let paragraph = Paragraph::new(prompt_lines)
+        .style(Style::default())
+        .alignment(Alignment::Center);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(prompt_len as u16 + 2),
+            Constraint::Length(3),
+            Constraint::Min(0),
+        ])
+        .split(area);
+
+    f.render_widget(paragraph, chunks[0]);
+
+    // Hide password input
+    let masked_input = "*".repeat(input.len());
+    let input_box = Paragraph::new(masked_input)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(Color::DarkGray)),
+        )
+        .style(Style::default().fg(Color::White));
+
+    let input_area = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(0)])
+        .split(chunks[1]);
+
+    // Center the password input box
+    let centered_input = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(35),
+            Constraint::Percentage(30),
+            Constraint::Percentage(35),
+        ])
+        .split(input_area[0]);
+
+    f.render_widget(input_box, centered_input[1]);
+
+    let help = Paragraph::new(help_text).alignment(Alignment::Center);
+    f.render_widget(help, chunks[2]);
+}
+
 fn draw_onboarding(
     f: &mut Frame,
     area: Rect,
@@ -206,7 +262,7 @@ fn draw_onboarding(
             f.render_widget(help_text, input_area[1]);
         }
         OnboardingMode::CreatePassword => {
-            let content = vec![
+            let prompt_lines = vec![
                 Line::from(""),
                 Line::from(vec![Span::styled(
                     "Create a password to encrypt your keys:",
@@ -220,40 +276,7 @@ fn draw_onboarding(
                 Line::from(""),
             ];
 
-            let paragraph = Paragraph::new(content)
-                .style(Style::default())
-                .alignment(Alignment::Center);
-            f.render_widget(paragraph, chunks[1]);
-
-            // Hide password input
-            let masked_input = "*".repeat(input.len());
-            let input_box = Paragraph::new(masked_input)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_type(BorderType::Rounded)
-                        .border_style(Style::default().fg(Color::DarkGray)),
-                )
-                .style(Style::default().fg(Color::White));
-
-            let input_area = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Length(3), Constraint::Min(0)])
-                .split(chunks[2]);
-
-            // Center the password input box
-            let centered_input = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([
-                    Constraint::Percentage(35),
-                    Constraint::Percentage(30),
-                    Constraint::Percentage(35),
-                ])
-                .split(input_area[0]);
-
-            f.render_widget(input_box, centered_input[1]);
-
-            let help = vec![
+            let help_text = vec![
                 Line::from(""),
                 Line::from(vec![
                     Span::styled("[ENTER] ", Style::default().fg(Color::Green)),
@@ -264,11 +287,10 @@ fn draw_onboarding(
                 ]),
             ];
 
-            let help_text = Paragraph::new(help).alignment(Alignment::Center);
-            f.render_widget(help_text, input_area[1]);
+            draw_password_input(f, chunks[1], prompt_lines, input, help_text);
         }
         OnboardingMode::EnterPassword => {
-            let mut content = vec![
+            let mut prompt_lines = vec![
                 Line::from(""),
                 Line::from(vec![Span::styled(
                     "Welcome back!",
@@ -283,49 +305,16 @@ fn draw_onboarding(
 
             // Show error if present
             if let Some(err) = error {
-                content.push(Line::from(""));
-                content.push(Line::from(vec![Span::styled(
+                prompt_lines.push(Line::from(""));
+                prompt_lines.push(Line::from(vec![Span::styled(
                     err,
                     Style::default().fg(Color::Red),
                 )]));
             }
 
-            content.push(Line::from(""));
+            prompt_lines.push(Line::from(""));
 
-            let paragraph = Paragraph::new(content)
-                .style(Style::default())
-                .alignment(Alignment::Center);
-            f.render_widget(paragraph, chunks[1]);
-
-            // Hide password input
-            let masked_input = "*".repeat(input.len());
-            let input_box = Paragraph::new(masked_input)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_type(BorderType::Rounded)
-                        .border_style(Style::default().fg(Color::DarkGray)),
-                )
-                .style(Style::default().fg(Color::White));
-
-            let input_area = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Length(3), Constraint::Min(0)])
-                .split(chunks[2]);
-
-            // Center the password input box
-            let centered_input = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([
-                    Constraint::Percentage(35),
-                    Constraint::Percentage(30),
-                    Constraint::Percentage(35),
-                ])
-                .split(input_area[0]);
-
-            f.render_widget(input_box, centered_input[1]);
-
-            let help = vec![
+            let help_text = vec![
                 Line::from(""),
                 Line::from(vec![
                     Span::styled("[ENTER] ", Style::default().fg(Color::Green)),
@@ -333,8 +322,7 @@ fn draw_onboarding(
                 ]),
             ];
 
-            let help_text = Paragraph::new(help).alignment(Alignment::Center);
-            f.render_widget(help_text, input_area[1]);
+            draw_password_input(f, chunks[1], prompt_lines, input, help_text);
         }
     }
 }

@@ -109,6 +109,13 @@ pub enum OnboardingMode {
     EnterPassword,
 }
 
+/// Temporary data during onboarding
+#[derive(Debug, Clone)]
+pub struct OnboardingData {
+    pub display_name: Option<String>,
+    pub nsec: Option<String>,
+}
+
 pub struct Nrc {
     storage: Box<NostrMls<NostrMlsSqliteStorage>>,
     pub keys: Keys,
@@ -128,6 +135,7 @@ pub struct Nrc {
     pub event_tx: Option<mpsc::UnboundedSender<AppEvent>>,
     pub command_tx: Option<mpsc::Sender<NetworkCommand>>,
     key_storage: KeyStorage,
+    pub onboarding_data: OnboardingData,
 }
 
 impl Nrc {
@@ -197,6 +205,10 @@ impl Nrc {
             event_tx: None,
             command_tx: None,
             key_storage,
+            onboarding_data: OnboardingData {
+                display_name: None,
+                nsec: None,
+            },
         })
     }
 
