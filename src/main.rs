@@ -1,6 +1,5 @@
 mod keyboard;
 mod tui;
-// mod network_task;  // TODO: Enable once storage can be shared
 
 use anyhow::Result;
 use clap::Parser;
@@ -9,13 +8,15 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use nrc::{AppEvent, AppState, NetworkCommand, Nrc, OnboardingData, OnboardingMode};
+use nrc::actions::Action;
+use nrc::evented_nrc::{EventedNrc, EventLoop};
+use nrc::AppState;
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::fs::{self, OpenOptions};
 use std::io;
 use std::path::PathBuf;
 use tokio::sync::mpsc;
-use tokio::time::{timeout, Duration};
+use tokio::time::Duration;
 
 fn default_data_dir() -> PathBuf {
     #[cfg(target_os = "macos")]
@@ -92,7 +93,8 @@ async fn main() -> Result<()> {
     setup_logging(&args.datadir)?;
     log::info!("Starting NRC with datadir: {:?}", args.datadir);
 
-    let mut nrc = Nrc::new(&args.datadir).await?;
+    // Create EventedNrc and EventLoop
+    let (evented, event_loop) = EventedNrc::new(&args.datadir).await?;
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -100,7 +102,7 @@ async fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let res = run_app(&mut terminal, &mut nrc).await;
+    let res = run_app(&mut terminal, evented, event_loop).await;
 
     disable_raw_mode()?;
     execute!(
@@ -119,367 +121,213 @@ async fn main() -> Result<()> {
 
 async fn run_app<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
-    nrc: &mut Nrc,
+    mut evented: EventedNrc,
+    mut event_loop: EventLoop,
 ) -> Result<()> {
-    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-    let (command_tx, _command_rx) = mpsc::channel(100);
-
-    // Store channels in Nrc
-    nrc.event_tx = Some(event_tx.clone());
-    nrc.command_tx = Some(command_tx.clone());
-
-    // Spawn event producers
-    keyboard::spawn_keyboard_listener(event_tx.clone());
-    // Start real-time notification handler for subscriptions
-    nrc::notification_handler::spawn_notification_handler(nrc.client.clone(), event_tx.clone());
-
-    // Start timer for pending operations processing only
-    let ops_event_tx = event_tx.clone();
-    tokio::spawn(async move {
-        use tokio::time::{interval, Duration};
-        let mut pending_ops_interval = interval(Duration::from_secs(30));
-
-        loop {
-            pending_ops_interval.tick().await;
-            let _ = ops_event_tx.send(AppEvent::ProcessPendingOperationsTick);
-        }
-    });
-
-    // Note: We'll need to create network task differently since we can't clone storage
-    // For now, we'll handle network commands directly in the main loop
-
-    // Main event loop - THE ONLY PLACE WHERE STATE CHANGES
+    // Channel for keyboard events
+    let (key_tx, mut key_rx) = mpsc::unbounded_channel();
+    
+    // Spawn keyboard listener
+    keyboard::spawn_keyboard_listener(key_tx.clone());
+    
+    // TODO: Update notification handler to emit Actions
+    // For now, we'll handle notifications through the existing pattern
+    
+    // Main loop
     loop {
-        // Draw UI
-        terminal.draw(|f| tui::draw(f, nrc))?;
-
-        // Process events with small timeout for refresh rate
-        match timeout(Duration::from_millis(50), event_rx.recv()).await {
-            Ok(Some(event)) => {
-                match event {
-                    AppEvent::KeyPress(key) => {
-                        if handle_key_press(nrc, key, &command_tx).await? {
-                            return Ok(()); // Quit
-                        }
+        // Draw UI with current state
+        terminal.draw(|f| tui::draw_evented(f, &evented))?;
+        
+        // Use tokio::select! to handle multiple async operations
+        tokio::select! {
+            // Check for state changes (efficient redraw)
+            _ = evented.state.changed() => {
+                // State changed, will redraw on next loop iteration
+            }
+            
+            // Handle keyboard input
+            Some(key_event) = key_rx.recv() => {
+                // Convert key event to action and emit
+                if let Some(action) = convert_key_to_action(&evented, key_event) {
+                    if matches!(action, Action::Quit) {
+                        return Ok(());
                     }
-                    AppEvent::Paste(text) => {
-                        handle_paste(nrc, text);
-                    }
-                    AppEvent::MessageReceived { group_id, message } => {
-                        nrc.add_message(group_id, message);
-                    }
-                    AppEvent::GroupCreated { group_id } => {
-                        nrc.add_group(group_id);
-                    }
-                    AppEvent::NetworkError { error } => {
-                        nrc.last_error = Some(error);
-                    }
-                    // Timer-based fetch events removed - now handled by subscription notifications
-                    AppEvent::ProcessPendingOperationsTick => {
-                        // Reserved for future persistent retry functionality
-                        log::debug!("Pending operations tick - no operations to process");
-                    }
-                    AppEvent::RawMessagesReceived { events } => {
-                        // Process the fetched messages in the main loop
-                        log::debug!("Processing {} fetched message events", events.len());
-                        for event in events {
-                            // Process each event - this is fast since it's just decryption
-                            if let Err(e) = nrc.process_message_event(event).await {
-                                log::debug!("Failed to process message: {e}");
-                            }
-                        }
-                    }
-                    AppEvent::RawWelcomesReceived { events } => {
-                        // Process the fetched welcomes in the main loop
-                        log::debug!("Processing {} fetched welcome events", events.len());
-                        for event in events {
-                            if let Err(e) = nrc.process_welcome_event(event).await {
-                                log::debug!("Failed to process welcome: {e}");
-                            }
-                        }
-                    }
-                    AppEvent::KeyPackagePublished => {
-                        if let AppState::Ready { groups, .. } = &nrc.state {
-                            nrc.state = AppState::Ready {
-                                key_package_published: true,
-                                groups: groups.clone(),
-                            };
-                        }
-                    }
-                    _ => {}
+                    evented.emit(action);
                 }
             }
-            Ok(None) => break, // Channel closed
-            Err(_) => {}       // Timeout - just redraw
+            
+            // Process events in the event loop
+            _ = event_loop.process_one() => {
+                // An action was processed
+            }
+            
+            // Add a small timeout to prevent busy waiting
+            _ = tokio::time::sleep(Duration::from_millis(50)) => {
+                // Periodic tick for any housekeeping
+            }
         }
     }
-
-    Ok(())
 }
 
-fn handle_paste(nrc: &mut Nrc, text: String) {
-    // Only handle paste in Ready state
-    if matches!(nrc.state, AppState::Ready { .. }) {
-        nrc.input.push_str(&text);
-        nrc.clear_error(); // Clear error on new input
-        log::debug!("Pasted text: '{}', Input now: '{}'", text, nrc.input);
-    } else if let AppState::Onboarding { ref mut input, .. } = nrc.state {
-        // Also handle paste during onboarding
-        input.push_str(&text);
-    }
-}
-
-async fn handle_key_press(
-    nrc: &mut Nrc,
-    key: KeyEvent,
-    _command_tx: &mpsc::Sender<NetworkCommand>,
-) -> Result<bool> {
-    // Only allow Ctrl+C for emergency exit
+/// Convert keyboard events to Actions based on current state
+fn convert_key_to_action(evented: &EventedNrc, key: KeyEvent) -> Option<Action> {
+    // Emergency exit
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-        return Ok(true);
+        return Some(Action::Quit);
     }
-
-    let state_clone = nrc.state.clone();
-    match state_clone {
-        AppState::Onboarding { input, mode } => {
+    
+    let state = evented.state.borrow();
+    match &*state {
+        AppState::Onboarding { mode, .. } => {
+            use nrc::OnboardingMode;
             match mode {
                 OnboardingMode::Choose => {
                     match key.code {
                         KeyCode::Char('1') => {
-                            // Move to display name entry
-                            nrc.state = AppState::Onboarding {
-                                input: String::new(),
-                                mode: OnboardingMode::EnterDisplayName,
-                            };
+                            Some(Action::OnboardingChoice(nrc::actions::OnboardingChoice::GenerateNew))
                         }
                         KeyCode::Char('2') => {
-                            nrc.state = AppState::Onboarding {
-                                input: String::new(),
-                                mode: OnboardingMode::ImportExisting,
-                            };
+                            Some(Action::OnboardingChoice(nrc::actions::OnboardingChoice::ImportExisting))
                         }
-                        KeyCode::Esc => return Ok(true),
-                        _ => {}
-                    }
-                }
-                OnboardingMode::GenerateNew => {
-                    // This mode is no longer used since we generate immediately
-                    if key.code == KeyCode::Esc {
-                        nrc.state = AppState::Onboarding {
-                            input,
-                            mode: OnboardingMode::Choose,
-                        };
+                        KeyCode::Esc => Some(Action::Quit),
+                        _ => None,
                     }
                 }
                 OnboardingMode::EnterDisplayName => {
-                    let mut new_input = input.clone();
                     match key.code {
                         KeyCode::Char(c) => {
-                            new_input.push(c);
-                            nrc.state = AppState::Onboarding {
-                                input: new_input,
-                                mode,
-                            };
+                            let mut input = evented.input.borrow().clone();
+                            input.push(c);
+                            Some(Action::SetInput(input))
                         }
                         KeyCode::Backspace => {
-                            new_input.pop();
-                            nrc.state = AppState::Onboarding {
-                                input: new_input,
-                                mode,
-                            };
+                            let mut input = evented.input.borrow().clone();
+                            input.pop();
+                            Some(Action::SetInput(input))
                         }
-                        KeyCode::Enter if !new_input.is_empty() => {
-                            // Store display name for later use
-                            nrc.onboarding_data.display_name = Some(new_input);
-                            // Move to password creation
-                            nrc.state = AppState::Onboarding {
-                                input: String::new(),
-                                mode: OnboardingMode::CreatePassword,
-                            };
+                        KeyCode::Enter if !evented.input.borrow().is_empty() => {
+                            let display_name = evented.input.borrow().clone();
+                            Some(Action::SetDisplayName(display_name))
                         }
                         KeyCode::Esc => {
-                            nrc.state = AppState::Onboarding {
-                                input: String::new(),
-                                mode: OnboardingMode::Choose,
-                            };
+                            Some(Action::OnboardingChoice(nrc::actions::OnboardingChoice::GenerateNew))
                         }
-                        _ => {}
+                        _ => None,
                     }
                 }
                 OnboardingMode::ImportExisting => {
-                    let mut new_input = input.clone();
                     match key.code {
                         KeyCode::Char(c) => {
-                            new_input.push(c);
-                            nrc.state = AppState::Onboarding {
-                                input: new_input,
-                                mode,
-                            };
+                            let mut input = evented.input.borrow().clone();
+                            input.push(c);
+                            Some(Action::SetInput(input))
                         }
                         KeyCode::Backspace => {
-                            new_input.pop();
-                            nrc.state = AppState::Onboarding {
-                                input: new_input,
-                                mode,
-                            };
+                            let mut input = evented.input.borrow().clone();
+                            input.pop();
+                            Some(Action::SetInput(input))
                         }
-                        KeyCode::Enter if !new_input.is_empty() => {
-                            // Store nsec for later use
-                            nrc.onboarding_data.nsec = Some(new_input);
-                            // Move to password creation
-                            nrc.state = AppState::Onboarding {
-                                input: String::new(),
-                                mode: OnboardingMode::CreatePassword,
-                            };
+                        KeyCode::Enter if !evented.input.borrow().is_empty() => {
+                            let nsec = evented.input.borrow().clone();
+                            Some(Action::SetNsec(nsec))
                         }
                         KeyCode::Esc => {
-                            nrc.state = AppState::Onboarding {
-                                input: String::new(),
-                                mode: OnboardingMode::Choose,
-                            };
+                            Some(Action::OnboardingChoice(nrc::actions::OnboardingChoice::ImportExisting))
                         }
-                        _ => {}
+                        _ => None,
                     }
                 }
-                OnboardingMode::CreatePassword => {
-                    let mut new_input = input.clone();
+                OnboardingMode::CreatePassword | OnboardingMode::EnterPassword => {
                     match key.code {
                         KeyCode::Char(c) => {
-                            new_input.push(c);
-                            nrc.state = AppState::Onboarding {
-                                input: new_input,
-                                mode,
-                            };
+                            let mut input = evented.input.borrow().clone();
+                            input.push(c);
+                            Some(Action::SetInput(input))
                         }
                         KeyCode::Backspace => {
-                            new_input.pop();
-                            nrc.state = AppState::Onboarding {
-                                input: new_input,
-                                mode,
-                            };
+                            let mut input = evented.input.borrow().clone();
+                            input.pop();
+                            Some(Action::SetInput(input))
                         }
-                        KeyCode::Enter if !new_input.is_empty() => {
-                            nrc.state = AppState::Initializing;
-
-                            // Check if we have a display name (new user) or nsec (import)
-                            if let Some(display_name) = nrc.onboarding_data.display_name.clone() {
-                                // New user with display name
-                                nrc.initialize_with_display_name_and_password(
-                                    display_name,
-                                    new_input,
-                                )
-                                .await?;
-                            } else if let Some(nsec) = nrc.onboarding_data.nsec.clone() {
-                                // Import with nsec
-                                nrc.initialize_with_nsec_and_password(nsec, new_input)
-                                    .await?;
-                            }
-                            // Clear onboarding data
-                            nrc.onboarding_data = OnboardingData {
-                                display_name: None,
-                                nsec: None,
-                            };
+                        KeyCode::Enter if !evented.input.borrow().is_empty() => {
+                            let password = evented.input.borrow().clone();
+                            Some(Action::SetPassword(password))
                         }
                         KeyCode::Esc => {
-                            // Go back to previous state
-                            if let Some(display_name) = nrc.onboarding_data.display_name.take() {
-                                // Was entering display name
-                                nrc.state = AppState::Onboarding {
-                                    input: display_name,
-                                    mode: OnboardingMode::EnterDisplayName,
-                                };
-                            } else if let Some(nsec) = nrc.onboarding_data.nsec.take() {
-                                // Was importing nsec
-                                nrc.state = AppState::Onboarding {
-                                    input: nsec,
-                                    mode: OnboardingMode::ImportExisting,
-                                };
-                            } else {
-                                nrc.state = AppState::Onboarding {
-                                    input: String::new(),
-                                    mode: OnboardingMode::Choose,
-                                };
-                            }
+                            // TODO: Handle going back in onboarding
+                            None
                         }
-                        _ => {}
+                        _ => None,
                     }
                 }
-                OnboardingMode::EnterPassword => {
-                    let mut new_input = input.clone();
-                    match key.code {
-                        KeyCode::Char(c) => {
-                            new_input.push(c);
-                            nrc.state = AppState::Onboarding {
-                                input: new_input,
-                                mode,
-                            };
-                        }
-                        KeyCode::Backspace => {
-                            new_input.pop();
-                            nrc.state = AppState::Onboarding {
-                                input: new_input,
-                                mode,
-                            };
-                        }
-                        KeyCode::Enter if !new_input.is_empty() => {
-                            nrc.state = AppState::Initializing;
-                            if let Err(e) = nrc.initialize_with_password(new_input).await {
-                                // Failed to decrypt - show error and stay in password prompt
-                                nrc.last_error = Some(format!("Invalid password: {e}"));
-                                nrc.state = AppState::Onboarding {
-                                    input: String::new(),
-                                    mode: OnboardingMode::EnterPassword,
-                                };
-                            }
-                        }
-                        _ => {}
-                    }
-                }
+                _ => None,
             }
         }
-        AppState::Initializing => {}
+        AppState::Initializing => None,
         AppState::Ready { .. } => {
-            // If help is showing, any key dismisses it
-            if nrc.show_help {
-                nrc.dismiss_help();
-                return Ok(false);
+            // Check if help is showing
+            if *evented.show_help.borrow() {
+                return Some(Action::DismissHelp);
             }
-
+            
+            let input = evented.input.borrow();
             match key.code {
                 // Arrow keys for navigation (only when input is empty)
-                KeyCode::Up if nrc.input.is_empty() => {
-                    nrc.prev_group();
-                }
-                KeyCode::Down if nrc.input.is_empty() => {
-                    nrc.next_group();
-                }
+                KeyCode::Up if input.is_empty() => Some(Action::PrevGroup),
+                KeyCode::Down if input.is_empty() => Some(Action::NextGroup),
                 // Ctrl+j/k for navigation
                 KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    nrc.next_group();
+                    Some(Action::NextGroup)
                 }
                 KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    nrc.prev_group();
+                    Some(Action::PrevGroup)
                 }
                 // Regular character input
-                KeyCode::Char(c) => {
-                    nrc.input.push(c);
-                    nrc.clear_error(); // Clear error on new input
-                    log::debug!("Input after char '{}': '{}'", c, nrc.input);
+                KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    let mut new_input = input.clone();
+                    new_input.push(c);
+                    Some(Action::SetInput(new_input))
                 }
                 KeyCode::Backspace => {
-                    nrc.input.pop();
+                    let mut new_input = input.clone();
+                    new_input.pop();
+                    Some(Action::SetInput(new_input))
                 }
-                KeyCode::Enter if !nrc.input.is_empty() => {
-                    let input = nrc.input.clone();
-                    nrc.input.clear();
-                    if nrc.process_input(input).await? {
-                        return Ok(true); // Quit was requested
+                KeyCode::Enter if !input.is_empty() => {
+                    let input_str = input.clone();
+                    
+                    // Clear input first
+                    evented.emit(Action::ClearInput);
+                    
+                    // Check if it's a command
+                    if input_str.starts_with("/") {
+                        // Parse command
+                        let parts: Vec<&str> = input_str.split_whitespace().collect();
+                        if parts.is_empty() {
+                            return None;
+                        }
+                        
+                        match parts[0] {
+                            "/quit" | "/q" => Some(Action::Quit),
+                            "/npub" | "/n" => Some(Action::CopyNpub),
+                            "/help" | "/h" => Some(Action::ShowHelp),
+                            "/next" => Some(Action::NextGroup),
+                            "/prev" => Some(Action::PrevGroup),
+                            "/join" | "/j" if parts.len() > 1 => {
+                                Some(Action::JoinGroup(parts[1].to_string()))
+                            }
+                            _ => {
+                                // Unknown command, already cleared input
+                                None
+                            }
+                        }
+                    } else {
+                        // Regular message
+                        Some(Action::SendMessage(input_str))
                     }
                 }
-                _ => {}
+                _ => None,
             }
         }
     }
-
-    Ok(false)
 }

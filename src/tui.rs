@@ -1,5 +1,6 @@
 use nostr_sdk::prelude::ToBech32;
-use nrc::{AppState, Nrc, OnboardingMode};
+use nrc::evented_nrc::EventedNrc;
+use nrc::{AppState, OnboardingMode};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -8,21 +9,26 @@ use ratatui::{
     Frame,
 };
 
-pub fn draw(f: &mut Frame, nrc: &Nrc) {
+/// Main draw function for EventedNrc
+pub fn draw_evented(f: &mut Frame, evented: &EventedNrc) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0)])
         .split(f.area());
 
-    match &nrc.state {
-        AppState::Onboarding { input, mode } => {
-            draw_onboarding(f, chunks[0], input, mode, nrc.last_error.as_deref());
+    let state = evented.state.borrow();
+    let input = evented.input.borrow();
+    let last_error = evented.last_error.borrow();
+    
+    match &*state {
+        AppState::Onboarding { mode, .. } => {
+            draw_onboarding(f, chunks[0], &input, mode, last_error.as_deref());
         }
         AppState::Initializing => {
             draw_initializing(f, chunks[0]);
         }
         AppState::Ready { groups, .. } => {
-            draw_ready_view(f, chunks[0], nrc, groups);
+            draw_ready_view_evented(f, chunks[0], evented, groups);
         }
     }
 }
@@ -101,59 +107,78 @@ fn draw_onboarding(
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .margin(2)
         .constraints([
-            Constraint::Length(3),
+            Constraint::Length(2),
             Constraint::Length(10),
             Constraint::Min(0),
         ])
         .split(inner);
 
-    let title = Paragraph::new("NOSTR RELAY CHAT")
-        .style(
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        )
-        .alignment(Alignment::Center);
-    f.render_widget(title, chunks[0]);
-
     match mode {
         OnboardingMode::Choose => {
-            let menu = vec![
+            let content = vec![
+                Line::from(""),
+                Line::from(vec![Span::styled(
+                    "WELCOME TO NRC",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )]),
+                Line::from(""),
+                Line::from("Choose an option:"),
                 Line::from(""),
                 Line::from(vec![
-                    Span::styled("[1] ", Style::default().fg(Color::Yellow)),
-                    Span::styled("Generate New Key", Style::default().fg(Color::White)),
+                    Span::styled("[1] ", Style::default().fg(Color::Green)),
+                    Span::raw("Generate new keys"),
                 ]),
-                Line::from(""),
                 Line::from(vec![
-                    Span::styled("[2] ", Style::default().fg(Color::Yellow)),
-                    Span::styled("Import Existing nsec", Style::default().fg(Color::White)),
+                    Span::styled("[2] ", Style::default().fg(Color::Cyan)),
+                    Span::raw("Import existing nsec"),
                 ]),
                 Line::from(""),
                 Line::from(vec![
                     Span::styled("[ESC] ", Style::default().fg(Color::Red)),
-                    Span::styled("Exit", Style::default().fg(Color::White)),
+                    Span::raw("Exit"),
                 ]),
             ];
 
-            let paragraph = Paragraph::new(menu)
+            let paragraph = Paragraph::new(content)
                 .style(Style::default())
                 .alignment(Alignment::Center);
             f.render_widget(paragraph, chunks[1]);
         }
         OnboardingMode::GenerateNew => {
-            // This mode is no longer used - we generate immediately
-            // But keeping it here in case the state somehow ends up here
             let content = vec![
                 Line::from(""),
                 Line::from(vec![Span::styled(
-                    "Generating...",
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
+                    "Your new keys have been generated!",
+                    Style::default().fg(Color::Green),
                 )]),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("NPUB: ", Style::default().fg(Color::Yellow)),
+                    Span::raw("..."), // We'd need to generate this
+                ]),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("NSEC: ", Style::default().fg(Color::Red)),
+                    Span::raw("..."), // We'd need to generate this
+                ]),
+                Line::from(""),
+                Line::from(vec![Span::styled(
+                    "⚠️  SAVE YOUR NSEC IN A SECURE LOCATION!",
+                    Style::default()
+                        .fg(Color::Red)
+                        .add_modifier(Modifier::BOLD | Modifier::SLOW_BLINK),
+                )]),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("[ENTER] ", Style::default().fg(Color::Green)),
+                    Span::raw("Continue"),
+                    Span::raw("  "),
+                    Span::styled("[ESC] ", Style::default().fg(Color::Red)),
+                    Span::raw("Back"),
+                ]),
             ];
 
             let paragraph = Paragraph::new(content)
@@ -190,13 +215,13 @@ fn draw_onboarding(
                 .constraints([Constraint::Length(3), Constraint::Min(0)])
                 .split(chunks[2]);
 
-            // Center the input box and limit its width for display name (30-40 chars wide)
+            // Center the input box
             let centered_input = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([
-                    Constraint::Percentage(35), // left padding
-                    Constraint::Percentage(30), // input box width
-                    Constraint::Percentage(35), // right padding
+                    Constraint::Percentage(25),
+                    Constraint::Percentage(50),
+                    Constraint::Percentage(25),
                 ])
                 .split(input_area[0]);
 
@@ -357,9 +382,14 @@ fn draw_initializing(f: &mut Frame, area: Rect) {
     f.render_widget(paragraph, inner);
 }
 
-fn draw_ready_view(f: &mut Frame, area: Rect, nrc: &Nrc, groups: &[openmls::group::GroupId]) {
+fn draw_ready_view_evented(
+    f: &mut Frame,
+    area: Rect,
+    evented: &EventedNrc,
+    groups: &[openmls::group::GroupId],
+) {
     // Show help overlay if active
-    if nrc.show_help {
+    if *evented.show_help.borrow() {
         draw_help_overlay(f, area);
         return;
     }
@@ -375,6 +405,7 @@ fn draw_ready_view(f: &mut Frame, area: Rect, nrc: &Nrc, groups: &[openmls::grou
         .border_type(BorderType::Double)
         .border_style(Style::default().fg(Color::DarkGray));
 
+    let selected_index = *evented.selected_group_index.borrow();
     let items: Vec<ListItem> = if groups.is_empty() {
         vec![ListItem::new("No chats yet").style(Style::default().fg(Color::DarkGray))]
     } else {
@@ -383,8 +414,8 @@ fn draw_ready_view(f: &mut Frame, area: Rect, nrc: &Nrc, groups: &[openmls::grou
             .enumerate()
             .map(|(i, group)| {
                 // Get the display name for this chat
-                let display_name = nrc.get_chat_display_name(group);
-                ListItem::new(display_name).style(if nrc.selected_group_index == Some(i) {
+                let display_name = evented.get_group_display_name(group);
+                ListItem::new(display_name).style(if selected_index == Some(i) {
                     Style::default()
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD)
@@ -396,11 +427,11 @@ fn draw_ready_view(f: &mut Frame, area: Rect, nrc: &Nrc, groups: &[openmls::grou
     };
 
     let list = List::new(items).block(groups_block).style(Style::default());
-
     f.render_widget(list, chunks[0]);
 
     // Handle right side layout based on whether there's an error
-    if let Some(ref error) = nrc.last_error {
+    let last_error = evented.last_error.borrow();
+    if let Some(ref error) = *last_error {
         // Calculate how many lines the error needs (with wrapping)
         let available_width = chunks[1].width.saturating_sub(4) as usize; // Subtract borders and padding
         let estimated_lines = if available_width > 0 {
@@ -421,23 +452,23 @@ fn draw_ready_view(f: &mut Frame, area: Rect, nrc: &Nrc, groups: &[openmls::grou
             .split(chunks[1]);
 
         // Check if a chat is selected for the top area
-        if let Some(selected_index) = nrc.selected_group_index {
+        if let Some(selected_index) = *evented.selected_group_index.borrow() {
             if selected_index < groups.len() {
                 // Show messages for the selected chat
                 let selected_group = &groups[selected_index];
-                draw_messages(f, right_chunks[0], nrc, selected_group);
+                draw_messages_evented(f, right_chunks[0], evented, selected_group);
             } else {
                 // Selected index out of bounds, show appropriate content
-                if should_show_help_message(nrc, groups) {
-                    draw_info_panel(f, right_chunks[0], nrc);
+                if should_show_help_message_evented(evented, groups) {
+                    draw_info_panel_evented(f, right_chunks[0], evented);
                 } else {
                     draw_empty_chat_area(f, right_chunks[0]);
                 }
             }
         } else {
             // No chat selected, show appropriate content
-            if should_show_help_message(nrc, groups) {
-                draw_info_panel(f, right_chunks[0], nrc);
+            if should_show_help_message_evented(evented, groups) {
+                draw_info_panel_evented(f, right_chunks[0], evented);
             } else {
                 draw_empty_chat_area(f, right_chunks[0]);
             }
@@ -458,7 +489,7 @@ fn draw_ready_view(f: &mut Frame, area: Rect, nrc: &Nrc, groups: &[openmls::grou
         f.render_widget(error_text, right_chunks[1]);
 
         // Draw input box
-        draw_input(f, right_chunks[2], nrc);
+        draw_input_evented(f, right_chunks[2], evented);
     } else {
         // No error - use standard layout
         // Split right side for content and input (3 lines for input box)
@@ -468,56 +499,74 @@ fn draw_ready_view(f: &mut Frame, area: Rect, nrc: &Nrc, groups: &[openmls::grou
             .split(chunks[1]);
 
         // Check if a chat is selected
-        if let Some(selected_index) = nrc.selected_group_index {
+        if let Some(selected_index) = *evented.selected_group_index.borrow() {
             if selected_index < groups.len() {
                 // Show messages for the selected chat
                 let selected_group = &groups[selected_index];
-                draw_messages(f, right_chunks[0], nrc, selected_group);
+                draw_messages_evented(f, right_chunks[0], evented, selected_group);
             } else {
                 // Selected index out of bounds, show appropriate content
-                if should_show_help_message(nrc, groups) {
-                    draw_info_panel(f, right_chunks[0], nrc);
+                if should_show_help_message_evented(evented, groups) {
+                    draw_info_panel_evented(f, right_chunks[0], evented);
                 } else {
                     draw_empty_chat_area(f, right_chunks[0]);
                 }
             }
         } else {
             // No chat selected, show appropriate content
-            if should_show_help_message(nrc, groups) {
-                draw_info_panel(f, right_chunks[0], nrc);
+            if should_show_help_message_evented(evented, groups) {
+                draw_info_panel_evented(f, right_chunks[0], evented);
             } else {
                 draw_empty_chat_area(f, right_chunks[0]);
             }
         }
 
         // Draw input box with optional flash message
-        draw_input_with_flash(f, right_chunks[1], nrc);
+        draw_input_with_flash_evented(f, right_chunks[1], evented);
     }
 }
 
-fn draw_messages(f: &mut Frame, area: Rect, nrc: &Nrc, active_group: &openmls::group::GroupId) {
+fn draw_messages_evented(
+    f: &mut Frame,
+    area: Rect,
+    evented: &EventedNrc,
+    active_group: &openmls::group::GroupId,
+) {
     let block = Block::default()
         .title("═══ CHAT ═══")
         .borders(Borders::ALL)
         .border_type(BorderType::Double)
         .border_style(Style::default().fg(Color::DarkGray));
 
-    let messages = nrc.get_messages(active_group);
+    let messages = evented.messages.borrow();
+    let group_messages = messages.get(active_group);
 
-    let content: Vec<Line> = if messages.is_empty() {
+    let content: Vec<Line> = if group_messages.is_none() || group_messages.unwrap().is_empty() {
         vec![Line::from(Span::styled(
             "No messages yet. Start the conversation!",
             Style::default().fg(Color::DarkGray),
         ))]
     } else {
-        messages
-            .iter()
+        let msgs = group_messages.unwrap();
+        msgs.iter()
             .map(|msg| {
                 // Get the display name for the sender
-                let sender_name = nrc.get_display_name_for_pubkey(&msg.sender);
+                // TODO: We need to get display names from somewhere
+                let sender_name = msg.sender.to_bech32()
+                    .map(|npub| {
+                        if npub.len() > 20 {
+                            format!("{}...{}", &npub[..10], &npub[npub.len() - 3..])
+                        } else {
+                            npub
+                        }
+                    })
+                    .unwrap_or_else(|_| "Unknown".to_string());
+                
                 // Use different colors for different users
                 // Current user gets green, others get cyan
-                let color = if msg.sender == nrc.public_key() {
+                let our_npub = &evented.npub;
+                let sender_npub = msg.sender.to_bech32().unwrap_or_default();
+                let color = if sender_npub == *our_npub {
                     Color::Green
                 } else {
                     Color::Cyan
@@ -530,24 +579,25 @@ fn draw_messages(f: &mut Frame, area: Rect, nrc: &Nrc, active_group: &openmls::g
             .collect()
     };
 
+    // TODO: Handle scroll offset
     let paragraph = Paragraph::new(content)
         .block(block)
-        .wrap(Wrap { trim: true })
-        .scroll((nrc.scroll_offset, 0));
+        .wrap(Wrap { trim: true });
 
     f.render_widget(paragraph, area);
 }
 
-fn draw_input(f: &mut Frame, area: Rect, nrc: &Nrc) {
+fn draw_input_evented(f: &mut Frame, area: Rect, evented: &EventedNrc) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::DarkGray))
         .title("═ INPUT ═");
 
+    let input = evented.input.borrow();
     // Create text with a cursor using spans
     let text = vec![Line::from(vec![
-        Span::raw(&nrc.input),
+        Span::raw(input.as_str()),
         Span::styled(
             "▌",
             Style::default()
@@ -556,14 +606,37 @@ fn draw_input(f: &mut Frame, area: Rect, nrc: &Nrc) {
         ),
     ])];
 
-    let input = Paragraph::new(text)
+    let input_widget = Paragraph::new(text)
         .block(block)
         .style(Style::default().fg(Color::White));
 
-    f.render_widget(input, area);
+    f.render_widget(input_widget, area);
 }
 
-fn draw_info_panel(f: &mut Frame, area: Rect, nrc: &Nrc) {
+fn draw_input_with_flash_evented(f: &mut Frame, area: Rect, evented: &EventedNrc) {
+    let flash_message = evented.flash_message.borrow();
+    if let Some(ref msg) = *flash_message {
+        // Split area for flash message and input
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Length(3)])
+            .split(area);
+
+        // Draw flash message
+        let flash = Paragraph::new(msg.as_str())
+            .style(Style::default().fg(Color::Green))
+            .alignment(Alignment::Center);
+        f.render_widget(flash, chunks[0]);
+
+        // Draw input
+        draw_input_evented(f, chunks[1], evented);
+    } else {
+        // No flash message, just draw input
+        draw_input_evented(f, area, evented);
+    }
+}
+
+fn draw_info_panel_evented(f: &mut Frame, area: Rect, evented: &EventedNrc) {
     let info_block = Block::default()
         .title("═══ INFO ═══")
         .borders(Borders::ALL)
@@ -574,11 +647,7 @@ fn draw_info_panel(f: &mut Frame, area: Rect, nrc: &Nrc) {
         Line::from(""),
         Line::from(vec![
             Span::styled("NPUB: ", Style::default().fg(Color::Yellow)),
-            Span::raw(
-                nrc.public_key()
-                    .to_bech32()
-                    .unwrap_or_else(|_| "error".to_string()),
-            ),
+            Span::raw(&evented.npub),
         ]),
         Line::from(""),
         Line::from(vec![Span::styled(
@@ -601,64 +670,8 @@ fn draw_info_panel(f: &mut Frame, area: Rect, nrc: &Nrc) {
             Span::raw("Show help"),
         ]),
         Line::from(vec![
-            Span::styled("↑↓ or Ctrl+j/k ", Style::default().fg(Color::DarkGray)),
-            Span::raw("Navigate chats"),
-        ]),
-        Line::from(vec![
             Span::styled("/quit (/q) ", Style::default().fg(Color::Red)),
-            Span::raw("Exit NRC"),
-        ]),
-    ];
-
-    let paragraph = Paragraph::new(info)
-        .block(info_block)
-        .wrap(Wrap { trim: true });
-    f.render_widget(paragraph, area);
-}
-
-fn draw_help_overlay(f: &mut Frame, area: Rect) {
-    // Create centered overlay
-    let block = Block::default()
-        .title("╔═══ HELP ═══╗")
-        .borders(Borders::ALL)
-        .border_type(BorderType::Double)
-        .border_style(Style::default().fg(Color::DarkGray));
-
-    let help_text = vec![
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            "NRC - NOSTR RELAY CHAT",
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        )]),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            "COMMANDS:",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("/join <npub> ", Style::default().fg(Color::Green)),
-            Span::styled("(/j)", Style::default().fg(Color::DarkGray)),
-            Span::raw(" - Start a new chat with someone"),
-        ]),
-        Line::from(vec![
-            Span::styled("/npub ", Style::default().fg(Color::Cyan)),
-            Span::styled("(/n)", Style::default().fg(Color::DarkGray)),
-            Span::raw(" - Copy your npub to clipboard"),
-        ]),
-        Line::from(vec![
-            Span::styled("/help ", Style::default().fg(Color::Cyan)),
-            Span::styled("(/h)", Style::default().fg(Color::DarkGray)),
-            Span::raw(" - Show this help screen"),
-        ]),
-        Line::from(vec![
-            Span::styled("/quit ", Style::default().fg(Color::Red)),
-            Span::styled("(/q)", Style::default().fg(Color::DarkGray)),
-            Span::raw(" - Exit NRC"),
+            Span::raw("Exit"),
         ]),
         Line::from(""),
         Line::from(vec![Span::styled(
@@ -669,59 +682,22 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
         )]),
         Line::from(""),
         Line::from(vec![
-            Span::styled("↑/↓ ", Style::default().fg(Color::Green)),
-            Span::raw("- Navigate through chats (when input is empty)"),
+            Span::styled("↑↓ or Ctrl+j/k ", Style::default().fg(Color::Cyan)),
+            Span::raw("Navigate chats"),
         ]),
-        Line::from(vec![
-            Span::styled("Ctrl+j/Ctrl+k ", Style::default().fg(Color::Green)),
-            Span::raw("- Navigate through chats (always works)"),
-        ]),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            "IN CHAT:",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )]),
-        Line::from(""),
-        Line::from(vec![
-            Span::raw("Type your message and press "),
-            Span::styled("Enter", Style::default().fg(Color::Green)),
-            Span::raw(" to send"),
-        ]),
-        Line::from(vec![
-            Span::styled("/exit ", Style::default().fg(Color::Yellow)),
-            Span::raw("- Leave the current chat view"),
-        ]),
-        Line::from(""),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            "Press any key to dismiss this help...",
-            Style::default()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::ITALIC),
-        )]),
     ];
 
-    let paragraph = Paragraph::new(help_text)
-        .block(block)
-        .alignment(Alignment::Center)
-        .wrap(Wrap { trim: true });
-
-    // Create a centered popup
-    let popup_area = centered_rect(80, 80, area);
-    f.render_widget(Clear, popup_area);
-    f.render_widget(paragraph, popup_area);
+    let paragraph = Paragraph::new(info)
+        .block(info_block)
+        .style(Style::default());
+    f.render_widget(paragraph, area);
 }
 
-/// Determines whether to show the help message based on user requirements:
-/// 1. When client doesn't have any groups
-/// 2. When user just ran /help and hasn't dismissed it
-fn should_show_help_message(nrc: &Nrc, groups: &[openmls::group::GroupId]) -> bool {
-    groups.is_empty() || nrc.help_explicitly_requested
+fn should_show_help_message_evented(_evented: &EventedNrc, groups: &[openmls::group::GroupId]) -> bool {
+    // Show help if no groups exist
+    groups.is_empty()
 }
 
-/// Draws an empty chat area when no help should be shown
 fn draw_empty_chat_area(f: &mut Frame, area: Rect) {
     let block = Block::default()
         .title("═══ CHAT ═══")
@@ -729,19 +705,99 @@ fn draw_empty_chat_area(f: &mut Frame, area: Rect) {
         .border_type(BorderType::Double)
         .border_style(Style::default().fg(Color::DarkGray));
 
-    let empty_text = vec![Line::from(Span::styled(
-        "Select a chat to start messaging",
-        Style::default().fg(Color::DarkGray),
-    ))];
+    let content = vec![
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "Select a chat to start messaging",
+            Style::default().fg(Color::DarkGray),
+        )]),
+    ];
 
-    let paragraph = Paragraph::new(empty_text)
+    let paragraph = Paragraph::new(content)
         .block(block)
+        .style(Style::default())
         .alignment(Alignment::Center);
-
     f.render_widget(paragraph, area);
 }
 
-fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+fn draw_help_overlay(f: &mut Frame, area: Rect) {
+    // Create a centered popup
+    let popup_area = centered_rect(60, 60, area);
+
+    // Clear the area behind the popup
+    f.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .title("═══ HELP ═══")
+        .borders(Borders::ALL)
+        .border_type(BorderType::Double)
+        .border_style(Style::default().fg(Color::Yellow));
+
+    let help_text = vec![
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "NRC - Nostr Relay Chat",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "COMMANDS:",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("/join <npub> ", Style::default().fg(Color::Green)),
+            Span::raw("Start a chat with someone"),
+        ]),
+        Line::from(vec![
+            Span::styled("/npub ", Style::default().fg(Color::Green)),
+            Span::raw("Copy your npub to clipboard"),
+        ]),
+        Line::from(vec![
+            Span::styled("/help ", Style::default().fg(Color::Green)),
+            Span::raw("Show this help screen"),
+        ]),
+        Line::from(vec![
+            Span::styled("/quit ", Style::default().fg(Color::Green)),
+            Span::raw("Exit the application"),
+        ]),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "NAVIGATION:",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("↑↓ ", Style::default().fg(Color::Green)),
+            Span::raw("Navigate between chats"),
+        ]),
+        Line::from(vec![
+            Span::styled("Ctrl+j/k ", Style::default().fg(Color::Green)),
+            Span::raw("Alternative navigation"),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Press any key to close this help",
+                Style::default().fg(Color::DarkGray)),
+        ]),
+    ];
+
+    let paragraph = Paragraph::new(help_text)
+        .block(block)
+        .style(Style::default())
+        .alignment(Alignment::Left);
+
+    f.render_widget(paragraph, popup_area);
+}
+
+/// Helper function to create a centered rect
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     let popup_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -749,7 +805,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
             Constraint::Percentage(percent_y),
             Constraint::Percentage((100 - percent_y) / 2),
         ])
-        .split(r);
+        .split(area);
 
     Layout::default()
         .direction(Direction::Horizontal)
@@ -759,26 +815,4 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(popup_layout[1])[1]
-}
-
-fn draw_input_with_flash(f: &mut Frame, area: Rect, nrc: &Nrc) {
-    // Check if we need to show flash message
-    if let Some(ref flash) = nrc.flash_message {
-        // Split area for flash message and input
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Length(2)])
-            .split(area);
-
-        let flash_text = Paragraph::new(flash.as_str())
-            .style(Style::default().fg(Color::Green))
-            .alignment(Alignment::Center);
-        f.render_widget(flash_text, chunks[0]);
-
-        // Draw input box
-        draw_input(f, chunks[1], nrc);
-    } else {
-        // No flash message, just draw input
-        draw_input(f, area, nrc);
-    }
 }

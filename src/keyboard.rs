@@ -1,21 +1,18 @@
-use crate::AppEvent;
-use crossterm::event::{self, Event};
+use crossterm::event::{self, Event, KeyEvent};
 use std::thread;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-pub fn spawn_keyboard_listener(tx: mpsc::UnboundedSender<AppEvent>) {
+pub fn spawn_keyboard_listener(tx: mpsc::UnboundedSender<KeyEvent>) {
     thread::spawn(move || {
         loop {
             // Poll with zero timeout - never blocks
             if event::poll(Duration::ZERO).unwrap_or(false) {
                 match event::read() {
                     Ok(Event::Key(key)) => {
-                        let _ = tx.send(AppEvent::KeyPress(key));
+                        let _ = tx.send(key);
                     }
-                    Ok(Event::Paste(text)) => {
-                        let _ = tx.send(AppEvent::Paste(text));
-                    }
+                    // TODO: Handle paste events
                     _ => {}
                 }
             }
