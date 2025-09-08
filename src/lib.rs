@@ -763,7 +763,7 @@ impl Nrc {
         self.keys = keys;
 
         let npub = self.keys.public_key().to_bech32()?;
-        log::info!("Loaded keys for npub: {}", npub);
+        log::info!("Loaded keys for npub: {npub}");
 
         // Recreate client with loaded keys
         self.client = Client::builder().signer(self.keys.clone()).build();

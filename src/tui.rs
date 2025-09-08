@@ -17,7 +17,7 @@ pub fn draw_evented(f: &mut Frame, evented: &EventedNrc) {
         .split(f.area());
 
     let ui_state = evented.ui_state.borrow();
-    
+
     match &ui_state.app_state {
         AppState::Onboarding { mode, input } => {
             draw_onboarding(f, chunks[0], input, mode, ui_state.last_error.as_deref());
@@ -413,7 +413,9 @@ fn draw_ready_view_with_state(
             .enumerate()
             .map(|(i, group)| {
                 // Get the display name for this chat from groups metadata
-                let display_name = ui_state.groups.get(group)
+                let display_name = ui_state
+                    .groups
+                    .get(group)
                     .map(|g| g.name.clone())
                     .unwrap_or_else(|| format!("Chat {}", i + 1));
                 ListItem::new(display_name).style(if selected_index == Some(i) {
@@ -553,7 +555,9 @@ fn draw_messages_with_state(
             .map(|msg| {
                 // Get the display name for the sender
                 // TODO: We need to get display names from somewhere
-                let sender_name = msg.sender.to_bech32()
+                let sender_name = msg
+                    .sender
+                    .to_bech32()
                     .map(|npub| {
                         if npub.len() > 20 {
                             format!("{}...{}", &npub[..10], &npub[npub.len() - 3..])
@@ -562,7 +566,7 @@ fn draw_messages_with_state(
                         }
                     })
                     .unwrap_or_else(|_| "Unknown".to_string());
-                
+
                 // Use different colors for different users
                 // Current user gets green, others get cyan
                 let our_npub = npub;
@@ -693,7 +697,10 @@ fn draw_info_panel_with_state(f: &mut Frame, area: Rect, _ui_state: &UIState, np
     f.render_widget(paragraph, area);
 }
 
-fn should_show_help_message_with_state(_ui_state: &UIState, groups: &[openmls::group::GroupId]) -> bool {
+fn should_show_help_message_with_state(
+    _ui_state: &UIState,
+    groups: &[openmls::group::GroupId],
+) -> bool {
     // Show help if no groups exist
     groups.is_empty()
 }
@@ -782,10 +789,10 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
             Span::raw("Alternative navigation"),
         ]),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("Press any key to close this help",
-                Style::default().fg(Color::DarkGray)),
-        ]),
+        Line::from(vec![Span::styled(
+            "Press any key to close this help",
+            Style::default().fg(Color::DarkGray),
+        )]),
     ];
 
     let paragraph = Paragraph::new(help_text)

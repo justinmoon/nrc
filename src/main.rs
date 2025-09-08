@@ -9,7 +9,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use nrc::actions::Action;
-use nrc::evented_nrc::{EventedNrc, convert_key_to_action};
+use nrc::evented_nrc::{convert_key_to_action, EventedNrc};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::fs;
 use std::io;
@@ -66,7 +66,7 @@ async fn main() -> Result<()> {
 
     // Initialize logging
     let log_file = datadir.join("nrc.log");
-    
+
     // Configure env_logger with custom format
     use std::io::Write;
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(&args.log_level))
@@ -84,14 +84,14 @@ async fn main() -> Result<()> {
         .target(env_logger::Target::Pipe(Box::new(
             OpenOptions::new()
                 .create(true)
-                .write(true)
+                
                 .append(true)
                 .open(&log_file)
                 .expect("Failed to open log file"),
         )))
         .init();
 
-    log::info!("Starting nrc with data directory: {:?}", datadir);
+    log::info!("Starting nrc with data directory: {datadir:?}");
 
     // Create EventedNrc with background processing
     let evented = EventedNrc::new(&datadir).await?;
@@ -125,22 +125,22 @@ async fn run_app<B: ratatui::backend::Backend>(
 ) -> Result<()> {
     // Channel for keyboard events
     let (key_tx, mut key_rx) = mpsc::unbounded_channel();
-    
+
     // Spawn keyboard listener
     keyboard::spawn_keyboard_listener(key_tx.clone());
-    
+
     // Main loop
     loop {
         // Draw UI with current state
         terminal.draw(|f| tui::draw_evented(f, &evented))?;
-        
+
         // Use tokio::select! to handle multiple async operations
         tokio::select! {
             // Check for state changes (efficient redraw)
             _ = evented.ui_state.changed() => {
                 // State changed, will redraw on next loop iteration
             }
-            
+
             // Handle keyboard input
             Some(key_event) = key_rx.recv() => {
                 // Convert key event to action and emit
@@ -152,7 +152,7 @@ async fn run_app<B: ratatui::backend::Backend>(
                     evented.emit(action);
                 }
             }
-            
+
             // Add a small timeout to prevent busy waiting
             _ = tokio::time::sleep(Duration::from_millis(50)) => {
                 // Periodic tick for any housekeeping
