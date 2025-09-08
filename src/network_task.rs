@@ -184,16 +184,9 @@ impl NetworkTaskState {
 
         if let StorageResponse::MessageCreated(event) = response {
             self.client.send_event(&event).await?;
-
-            // Add message to local history
-            let message = Message {
-                content,
-                sender: self.keys.public_key(),
-                timestamp: text_note_rumor.created_at,
-            };
-            let _ = self
-                .event_tx
-                .send(AppEvent::MessageReceived { group_id, message });
+            
+            // Message will be received back via notification handler and processed there
+            // This prevents duplicate messages in the chat
             Ok(())
         } else {
             Err(anyhow::anyhow!("Failed to create message"))
