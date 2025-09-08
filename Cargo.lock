@@ -1799,8 +1799,9 @@ checksum = "f0efe882e02d206d8d279c20eb40e03baf7cb5136a1476dc084a324fbc3ec42d"
 
 [[package]]
 name = "nostr"
-version = "0.43.0"
-source = "git+https://github.com/rust-nostr/nostr?branch=master#1c66cfdc883e79ecc36e12c50bfce9e286f8c951"
+version = "0.43.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62a97d745f1bd8d5e05a978632bbb87b0614567d5142906fe7c86fb2440faac6"
 dependencies = [
  "base64",
  "bech32",
@@ -1810,7 +1811,6 @@ dependencies = [
  "chacha20",
  "chacha20poly1305",
  "getrandom 0.2.16",
- "hex",
  "instant",
  "scrypt",
  "secp256k1",
@@ -1823,7 +1823,8 @@ dependencies = [
 [[package]]
 name = "nostr-database"
 version = "0.43.0"
-source = "git+https://github.com/rust-nostr/nostr?branch=master#1c66cfdc883e79ecc36e12c50bfce9e286f8c951"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1c75a8c2175d2785ba73cfddef21d1e30da5fbbdf158569b6808ba44973a15b"
 dependencies = [
  "lru 0.16.0",
  "nostr",
@@ -1831,59 +1832,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "nostr-mls"
-version = "0.43.0"
-source = "git+https://github.com/rust-nostr/nostr?branch=master#1c66cfdc883e79ecc36e12c50bfce9e286f8c951"
-dependencies = [
- "aes-gcm",
- "hex",
- "nostr",
- "nostr-mls-storage",
- "openmls",
- "openmls_basic_credential",
- "openmls_rust_crypto",
- "openmls_traits",
- "tls_codec",
- "tracing",
-]
-
-[[package]]
-name = "nostr-mls-sqlite-storage"
-version = "0.43.0"
-source = "git+https://github.com/rust-nostr/nostr?branch=master#1c66cfdc883e79ecc36e12c50bfce9e286f8c951"
-dependencies = [
- "nostr",
- "nostr-mls-storage",
- "openmls",
- "openmls_sqlite_storage",
- "refinery",
- "rusqlite",
- "serde",
- "serde_json",
- "tracing",
-]
-
-[[package]]
-name = "nostr-mls-storage"
-version = "0.43.0"
-source = "git+https://github.com/rust-nostr/nostr?branch=master#1c66cfdc883e79ecc36e12c50bfce9e286f8c951"
-dependencies = [
- "nostr",
- "openmls",
- "openmls_traits",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "nostr-relay-pool"
 version = "0.43.0"
-source = "git+https://github.com/rust-nostr/nostr?branch=master#1c66cfdc883e79ecc36e12c50bfce9e286f8c951"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "265d9b44771ed15db93b183a0c93dbb703b2b0d0b74dffb5c2a081be52373a5a"
 dependencies = [
  "async-utility",
  "async-wsocket",
  "atomic-destructor",
- "hex",
  "lru 0.16.0",
  "negentropy",
  "nostr",
@@ -1895,7 +1851,8 @@ dependencies = [
 [[package]]
 name = "nostr-sdk"
 version = "0.43.0"
-source = "git+https://github.com/rust-nostr/nostr?branch=master#1c66cfdc883e79ecc36e12c50bfce9e286f8c951"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "599f8963d6a1522a13b1a2b0ea6e168acfc367706606f1d33fa595e91fa22db0"
 dependencies = [
  "async-utility",
  "nostr",
@@ -1906,7 +1863,7 @@ dependencies = [
 
 [[package]]
 name = "nrc"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1917,13 +1874,61 @@ dependencies = [
  "env_logger",
  "hex",
  "log",
- "nostr-mls",
- "nostr-mls-sqlite-storage",
- "nostr-mls-storage",
  "nostr-sdk",
+ "nrc-mls",
+ "nrc-mls-sqlite-storage",
+ "nrc-mls-storage",
  "openmls",
  "ratatui",
  "tokio",
+]
+
+[[package]]
+name = "nrc-mls"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bd9dc065f0c578d1257b69ef24c9f8383f7eb8817bc0c09367f7ec125980081f"
+dependencies = [
+ "aes-gcm",
+ "hex",
+ "nostr",
+ "nrc-mls-storage",
+ "openmls",
+ "openmls_basic_credential",
+ "openmls_rust_crypto",
+ "openmls_traits",
+ "tls_codec",
+ "tracing",
+]
+
+[[package]]
+name = "nrc-mls-sqlite-storage"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "260a50d493c99e5260704655e35c40b47299745aaff48abb30846b8f8dedda95"
+dependencies = [
+ "nostr",
+ "nrc-mls-storage",
+ "openmls",
+ "openmls_sqlite_storage",
+ "refinery",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
+name = "nrc-mls-storage"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9a452bc65574cb12feab300fc509f139e1c7b95f96505e6c7427661da439e08"
+dependencies = [
+ "nostr",
+ "openmls",
+ "openmls_traits",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -3180,7 +3185,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "784e0ac535deb450455cbfa28a6f0df145ea1bb7ae51b821cf5e7927fdcfbdd0"
 dependencies = [
  "pin-project-lite",
+ "tracing-attributes",
  "tracing-core",
+]
+
+[[package]]
+name = "tracing-attributes"
+version = "0.1.30"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "81383ab64e72a7a8b8e13130c49e3dab29def6d0c7d76a03087b3cf71c5c6903"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
