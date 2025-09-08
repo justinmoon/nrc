@@ -30,17 +30,14 @@ impl KeyStorage {
 
     /// Check if any encrypted keys exist
     pub fn keys_exist(&self) -> bool {
-        if let Ok(conn) = Connection::open(&self.db_path) {
-            // First ensure the table exists
-            if self.init_table(&conn).is_ok() {
-                if let Ok(mut stmt) = conn.prepare("SELECT COUNT(*) FROM keys") {
-                    if let Ok(count) = stmt.query_row([], |row| row.get::<_, i64>(0)) {
-                        return count > 0;
-                    }
-                }
-            }
-        }
-        false
+        self.keys_exist_internal().unwrap_or(false)
+    }
+
+    fn keys_exist_internal(&self) -> Result<bool> {
+        let conn = Connection::open(&self.db_path)?;
+        self.init_table(&conn)?;
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM keys", [], |row| row.get(0))?;
+        Ok(count > 0)
     }
 
     /// Get the first available account npub (for loading on startup)
