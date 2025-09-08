@@ -26,7 +26,7 @@ pub fn draw_evented(f: &mut Frame, evented: &EventedNrc) {
             draw_initializing(f, chunks[0]);
         }
         AppState::Ready { groups, .. } => {
-            draw_ready_view_with_state(f, chunks[0], &ui_state, &evented.npub, groups);
+            draw_ready_view_with_state(f, chunks[0], &ui_state, &evented.get_npub(), groups);
         }
     }
 }

@@ -23,12 +23,12 @@ pub struct UIState {
     pub flash_message: Option<String>,
     pub show_help: bool,
     pub profiles: HashMap<PublicKey, Metadata>,
+    pub current_pubkey: PublicKey,
 }
 
 pub struct EventedNrc {
     // Single unified state channel containing all UI data
     pub ui_state: watch::Receiver<UIState>,
-    pub npub: String,
 
     // Send actions to the event loop
     action_tx: mpsc::UnboundedSender<Action>,
@@ -38,7 +38,6 @@ impl EventedNrc {
     pub async fn new(datadir: &Path) -> Result<Self> {
         // Create the underlying Nrc
         let nrc = Nrc::new(datadir).await?;
-        let npub = nrc.keys.public_key().to_bech32()?;
 
         // Create initial UI state
         let initial_ui_state = UIState {
@@ -51,6 +50,7 @@ impl EventedNrc {
             flash_message: nrc.flash_message.clone(),
             show_help: nrc.show_help,
             profiles: nrc.profiles.clone(),
+            current_pubkey: nrc.keys.public_key(),
         };
 
         // Create channels
@@ -82,7 +82,6 @@ impl EventedNrc {
 
         Ok(EventedNrc {
             ui_state: ui_state_rx,
-            npub,
             action_tx,
         })
     }
@@ -96,6 +95,11 @@ impl EventedNrc {
     /// Helper to get current app state
     pub fn current_state(&self) -> AppState {
         self.ui_state.borrow().app_state.clone()
+    }
+
+    /// Get current npub (derives from current keys in UI state)
+    pub fn get_npub(&self) -> String {
+        self.ui_state.borrow().current_pubkey.to_bech32().unwrap_or_else(|_| "unknown".to_string())
     }
 
     /// Get messages for a specific group
@@ -289,6 +293,7 @@ async fn process_action_sync(
         flash_message: nrc.flash_message.clone(),
         show_help: nrc.show_help,
         profiles: nrc.profiles.clone(),
+        current_pubkey: nrc.keys.public_key(),
     };
     let _ = ui_state_tx.send(ui_state);
     log::debug!("📡 STATE UPDATE: {:?}", nrc.state);

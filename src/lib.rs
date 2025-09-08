@@ -219,6 +219,7 @@ impl Nrc {
     }
 
     pub async fn publish_key_package(&mut self) -> Result<()> {
+        log::info!("📦 Publishing key package for {}", self.keys.public_key().to_bech32()?);
         // First subscribe to key packages so we can verify our own
         let filter = Filter::new()
             .kind(Kind::from(443u16))
@@ -241,6 +242,7 @@ impl Nrc {
             .await?;
 
         self.client.send_event(&event).await?;
+        log::info!("📦 Key package event sent: {}", event.id);
 
         // Wait a bit to ensure it's published
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -266,6 +268,7 @@ impl Nrc {
     }
 
     pub async fn fetch_key_package(&self, pubkey: &PublicKey) -> Result<Event> {
+        log::info!("🔍 Fetching key package for {}", pubkey.to_bech32()?);
         let filter = Filter::new()
             .kind(Kind::from(443u16))
             .author(*pubkey)
@@ -275,23 +278,32 @@ impl Nrc {
         self.client.subscribe(filter.clone(), None).await?;
 
         // Give time for event to propagate to relay and retry multiple times
-        for attempt in 1..=10 {
-            tokio::time::sleep(Duration::from_millis(1500)).await;
+        let (max_attempts, delay_ms, fetch_timeout) = if cfg!(test) {
+            // Shorter timeouts for tests
+            (5, 500, 2)
+        } else {
+            // Production values
+            (10, 1500, 5)
+        };
+
+        for attempt in 1..=max_attempts {
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
 
             // Try to fetch from relay
             let events = self
                 .client
-                .fetch_events(filter.clone(), Duration::from_secs(5))
+                .fetch_events(filter.clone(), Duration::from_secs(fetch_timeout))
                 .await?;
 
             if let Some(event) = events.into_iter().next() {
-                log::debug!("Found key package on attempt {attempt}");
+                log::info!("✅ Found key package on attempt {attempt}: event_id={}", event.id);
                 return Ok(event);
             }
-            log::debug!("Key package not found on attempt {attempt}");
+            log::warn!("⚠️ Key package not found on attempt {attempt} for {}", pubkey.to_bech32()?);
         }
 
-        Err(anyhow::anyhow!("No key package found for {pubkey}"))
+        log::error!("❌ Failed to find key package for {} after 10 attempts", pubkey.to_bech32()?);
+        Err(anyhow::anyhow!("No key package found for {}", pubkey.to_bech32()?))
     }
 
     pub async fn create_group(&mut self, name: String) -> Result<GroupId> {
@@ -712,10 +724,12 @@ impl Nrc {
         display_name: String,
         password: String,
     ) -> Result<()> {
+        log::info!("🚀 Starting initialization for new user: {}", display_name);
         self.state = AppState::Initializing;
 
         // Save the keys encrypted with the password (npub is derived from keys)
         self.key_storage.save_encrypted(&self.keys, &password)?;
+        log::info!("✅ Keys saved for {}", self.keys.public_key().to_bech32()?);
 
         // Publish profile with display name
         self.publish_profile(display_name).await?;
@@ -726,6 +740,7 @@ impl Nrc {
         // Load groups and set up subscriptions
         self.initialize_groups().await?;
 
+        log::info!("✅ Initialization complete, state: {:?}", self.state);
         Ok(())
     }
 

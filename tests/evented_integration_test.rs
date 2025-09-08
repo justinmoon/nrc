@@ -35,8 +35,8 @@ impl EventedTestClient {
     /// Wait for events to be processed (background thread handles it)
     pub async fn wait_for_processing(&mut self) -> Result<()> {
         println!("🔄 {} waiting for background processing...", self.name);
-        // Give the background thread time to process events
-        sleep(Duration::from_millis(100)).await;
+        // Give the background thread time to process events (longer for network operations)
+        sleep(Duration::from_millis(500)).await;
         println!("✅ {} processing wait complete", self.name);
         Ok(())
     }
@@ -132,7 +132,7 @@ impl EventedTestClient {
     }
 
     pub fn get_npub(&self) -> String {
-        self.evented.npub.clone()
+        self.evented.get_npub()
     }
 
     /// Send a /join command like the UI would
@@ -145,6 +145,10 @@ impl EventedTestClient {
         );
 
         self.evented.emit(Action::JoinGroup(other_npub.to_string()));
+        
+        // Wait longer for network operations like key package fetching
+        println!("🔄 {} waiting for join operation (network intensive)...", self.name);
+        sleep(Duration::from_secs(3)).await;
         self.wait_for_processing().await?;
 
         println!(
