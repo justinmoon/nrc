@@ -11,3 +11,4 @@
 - When implementing features, always run `just ci` to verify the changes work before declaring victory. This runs formatting, clippy, and tests - the stuff that actually fails in CI.
 - When making database schema changes, always update plans/database.md to keep the schema documentation current. This doc has detailed explanations of every table and column.
 - This app targets macos and linux -- not windows
+- do not create issues or prs in github repos not owned by justinmoon without asking first
