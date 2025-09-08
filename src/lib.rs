@@ -1,3 +1,4 @@
+use crate::key_storage::KeyStorage;
 use anyhow::Result;
 use crossterm::event::KeyEvent;
 use nostr_sdk::prelude::*;
@@ -11,6 +12,7 @@ use std::str::FromStr;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
+pub mod key_storage;
 pub mod notification_handler;
 /// Get default relay URLs - uses local relay for tests when TEST_USE_LOCAL_RELAY is set
 pub fn get_default_relays() -> &'static [&'static str] {
@@ -102,7 +104,9 @@ pub enum OnboardingMode {
     Choose,
     GenerateNew,
     EnterDisplayName,
+    CreatePassword,
     ImportExisting,
+    EnterPassword,
 }
 
 pub struct Nrc {
@@ -123,11 +127,39 @@ pub struct Nrc {
     profiles: HashMap<PublicKey, Metadata>,
     pub event_tx: Option<mpsc::UnboundedSender<AppEvent>>,
     pub command_tx: Option<mpsc::Sender<NetworkCommand>>,
+    key_storage: KeyStorage,
 }
 
 impl Nrc {
     pub async fn new(datadir: &Path) -> Result<Self> {
-        let keys = Keys::generate();
+        // Create datadir if it doesn't exist
+        std::fs::create_dir_all(datadir)?;
+
+        let key_storage = KeyStorage::new(datadir);
+
+        // Check if we have existing keys
+        let (keys, initial_state) = if key_storage.keys_exist() {
+            // We have stored keys, prompt for password
+            let keys = Keys::generate(); // Temporary, will be replaced when password entered
+            (
+                keys,
+                AppState::Onboarding {
+                    input: String::new(),
+                    mode: OnboardingMode::EnterPassword,
+                },
+            )
+        } else {
+            // No stored keys, show regular onboarding
+            let keys = Keys::generate();
+            (
+                keys,
+                AppState::Onboarding {
+                    input: String::new(),
+                    mode: OnboardingMode::Choose,
+                },
+            )
+        };
+
         let client = Client::builder().signer(keys.clone()).build();
 
         // Add multiple relays for redundancy
@@ -142,8 +174,6 @@ impl Nrc {
         // Wait for connections to establish
         tokio::time::sleep(Duration::from_secs(2)).await;
 
-        // Create datadir if it doesn't exist
-        std::fs::create_dir_all(datadir)?;
         let db_path = datadir.join("nrc.db");
         log::info!("Using SQLite storage at: {db_path:?}");
         let storage = Box::new(NostrMls::new(NostrMlsSqliteStorage::new(db_path)?));
@@ -152,10 +182,7 @@ impl Nrc {
             storage,
             keys,
             client,
-            state: AppState::Onboarding {
-                input: String::new(),
-                mode: OnboardingMode::Choose,
-            },
+            state: initial_state,
             messages: HashMap::new(),
             welcome_rumors: HashMap::new(),
             groups: HashMap::new(),
@@ -169,6 +196,7 @@ impl Nrc {
             profiles: HashMap::new(),
             event_tx: None,
             command_tx: None,
+            key_storage,
         })
     }
 
@@ -662,6 +690,103 @@ impl Nrc {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         self.initialize().await
+    }
+
+    /// Initialize with a display name and password (for new users)
+    pub async fn initialize_with_display_name_and_password(
+        &mut self,
+        display_name: String,
+        password: String,
+    ) -> Result<()> {
+        self.state = AppState::Initializing;
+
+        // Save the keys encrypted with the password
+        self.key_storage.save_encrypted(&self.keys, &password)?;
+
+        // Publish profile with display name
+        self.publish_profile(display_name).await?;
+
+        // Then publish key package
+        self.publish_key_package().await?;
+
+        // Load groups and set up subscriptions
+        self.initialize_groups().await?;
+
+        Ok(())
+    }
+
+    /// Initialize with nsec and password (for importing existing keys)
+    pub async fn initialize_with_nsec_and_password(
+        &mut self,
+        nsec: String,
+        password: String,
+    ) -> Result<()> {
+        let keys = Keys::parse(&nsec)?;
+        self.keys = keys;
+
+        // Save the imported keys encrypted with the password
+        self.key_storage.save_encrypted(&self.keys, &password)?;
+
+        // Recreate client with new keys
+        self.client = Client::builder().signer(self.keys.clone()).build();
+
+        for &relay in get_default_relays() {
+            if let Err(e) = self.client.add_relay(relay).await {
+                log::warn!("Failed to add relay {relay}: {e}");
+            }
+        }
+
+        self.client.connect().await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        self.initialize().await
+    }
+
+    /// Initialize with password (for returning users)
+    pub async fn initialize_with_password(&mut self, password: String) -> Result<()> {
+        // Load and decrypt the stored keys
+        let keys = self.key_storage.load_encrypted(&password)?;
+        self.keys = keys;
+
+        // Recreate client with loaded keys
+        self.client = Client::builder().signer(self.keys.clone()).build();
+
+        for &relay in get_default_relays() {
+            if let Err(e) = self.client.add_relay(relay).await {
+                log::warn!("Failed to add relay {relay}: {e}");
+            }
+        }
+
+        self.client.connect().await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        self.initialize().await
+    }
+
+    /// Helper to initialize groups after keys are set up
+    async fn initialize_groups(&mut self) -> Result<()> {
+        let groups = self.storage.get_groups()?;
+        let group_ids: Vec<GroupId> = groups.iter().map(|g| g.mls_group_id.clone()).collect();
+
+        // Store groups in our HashMap for later use and subscribe to messages
+        for group in groups {
+            self.groups
+                .insert(group.mls_group_id.clone(), group.clone());
+
+            // Subscribe to messages for this group
+            let h_tag_value = hex::encode(group.nostr_group_id);
+            let filter = Filter::new()
+                .kind(Kind::from(445u16))
+                .custom_tag(SingleLetterTag::lowercase(Alphabet::H), h_tag_value)
+                .limit(100);
+            let _ = self.client.subscribe(filter, None).await;
+        }
+
+        self.state = AppState::Ready {
+            key_package_published: true,
+            groups: group_ids,
+        };
+        Ok(())
     }
 
     pub fn next_group(&mut self) {
