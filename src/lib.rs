@@ -700,7 +700,7 @@ impl Nrc {
     ) -> Result<()> {
         self.state = AppState::Initializing;
 
-        // Save the keys encrypted with the password
+        // Save the keys encrypted with the password (npub is derived from keys)
         self.key_storage.save_encrypted(&self.keys, &password)?;
 
         // Publish profile with display name
@@ -724,7 +724,7 @@ impl Nrc {
         let keys = Keys::parse(&nsec)?;
         self.keys = keys;
 
-        // Save the imported keys encrypted with the password
+        // Save the imported keys encrypted with the password (npub is derived from keys)
         self.key_storage.save_encrypted(&self.keys, &password)?;
 
         // Recreate client with new keys
@@ -747,6 +747,9 @@ impl Nrc {
         // Load and decrypt the stored keys
         let keys = self.key_storage.load_encrypted(&password)?;
         self.keys = keys;
+
+        let npub = self.keys.public_key().to_bech32()?;
+        log::info!("Loaded keys for npub: {}", npub);
 
         // Recreate client with loaded keys
         self.client = Client::builder().signer(self.keys.clone()).build();

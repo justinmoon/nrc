@@ -1,39 +1,92 @@
 use anyhow::{anyhow, Result};
 use nostr_sdk::prelude::*;
-use std::fs;
+use rusqlite::{params, Connection};
 use std::path::Path;
 
-/// Manages encrypted key storage using NIP-49
+/// Manages encrypted key storage using NIP-49 in SQLite
 pub struct KeyStorage {
-    keys_path: std::path::PathBuf,
+    db_path: std::path::PathBuf,
 }
 
 impl KeyStorage {
     pub fn new(datadir: &Path) -> Self {
         Self {
-            keys_path: datadir.join("keys.ncryptsec"),
+            db_path: datadir.join("nrc.db"),
         }
     }
 
-    /// Check if encrypted keys exist
+    /// Initialize the keys table if it doesn't exist
+    fn init_table(&self, conn: &Connection) -> Result<()> {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS keys (
+                id INTEGER PRIMARY KEY,
+                npub TEXT NOT NULL UNIQUE,
+                encrypted_nsec TEXT NOT NULL
+            )",
+            [],
+        )?;
+        Ok(())
+    }
+
+    /// Check if any encrypted keys exist
     pub fn keys_exist(&self) -> bool {
-        self.keys_path.exists()
+        if let Ok(conn) = Connection::open(&self.db_path) {
+            // First ensure the table exists
+            if self.init_table(&conn).is_ok() {
+                if let Ok(mut stmt) = conn.prepare("SELECT COUNT(*) FROM keys") {
+                    if let Ok(count) = stmt.query_row([], |row| row.get::<_, i64>(0)) {
+                        return count > 0;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Get the first available account npub (for loading on startup)
+    pub fn get_first_npub(&self) -> Result<String> {
+        let conn = Connection::open(&self.db_path)?;
+        let npub: String =
+            conn.query_row("SELECT npub FROM keys ORDER BY id LIMIT 1", [], |row| {
+                row.get(0)
+            })?;
+        Ok(npub)
     }
 
     /// Save keys encrypted with password using NIP-49
     pub fn save_encrypted(&self, keys: &Keys, password: &str) -> Result<()> {
+        let conn = Connection::open(&self.db_path)?;
+        self.init_table(&conn)?;
+
+        // Get the npub from the keys
+        let npub = keys.public_key().to_bech32()?;
+
         // Use the encrypt method to create an EncryptedSecretKey
         let encrypted = keys.secret_key().encrypt(password)?;
         // Convert to bech32 string for storage
         let encrypted_str = encrypted.to_bech32()?;
-        fs::write(&self.keys_path, encrypted_str)?;
-        log::info!("Keys saved to {:?}", self.keys_path);
+
+        // Insert or replace the account with the npub
+        conn.execute(
+            "INSERT OR REPLACE INTO keys (npub, encrypted_nsec) VALUES (?1, ?2)",
+            params![npub, encrypted_str],
+        )?;
+
+        log::info!("Keys saved to database for npub: {}", npub);
         Ok(())
     }
 
     /// Load and decrypt keys with password
     pub fn load_encrypted(&self, password: &str) -> Result<Keys> {
-        let encrypted_str = fs::read_to_string(&self.keys_path)?;
+        let conn = Connection::open(&self.db_path)?;
+
+        // Get the first account (for now, until we have account selection)
+        let encrypted_str: String = conn.query_row(
+            "SELECT encrypted_nsec FROM keys ORDER BY id LIMIT 1",
+            [],
+            |row| row.get(0),
+        )?;
+
         // Parse the encrypted key from bech32
         let encrypted = EncryptedSecretKey::from_bech32(&encrypted_str)?;
         // Decrypt to get the secret key
@@ -43,12 +96,11 @@ impl KeyStorage {
         Ok(Keys::new(secret_key))
     }
 
-    /// Delete stored keys
-    pub fn delete(&self) -> Result<()> {
-        if self.keys_path.exists() {
-            fs::remove_file(&self.keys_path)?;
-            log::info!("Deleted keys at {:?}", self.keys_path);
-        }
+    /// Delete stored keys for a specific npub
+    pub fn delete_by_npub(&self, npub: &str) -> Result<()> {
+        let conn = Connection::open(&self.db_path)?;
+        conn.execute("DELETE FROM keys WHERE npub = ?1", params![npub])?;
+        log::info!("Deleted keys for npub: {}", npub);
         Ok(())
     }
 }
