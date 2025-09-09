@@ -1,8 +1,8 @@
 use anyhow::Result;
-use nostr_sdk::prelude::*;
 use nostr_sdk::nips::nip59;
+use nostr_sdk::prelude::*;
 use nrc_mls::groups::NostrGroupConfigData;
-use nrc_mls::{NostrMls, messages::MessageProcessingResult};
+use nrc_mls::{messages::MessageProcessingResult, NostrMls};
 use nrc_mls_sqlite_storage::NostrMlsSqliteStorage;
 use openmls::group::GroupId;
 use std::collections::HashMap;
@@ -42,7 +42,7 @@ pub struct App {
 impl App {
     pub async fn new(
         storage: Arc<NostrMls<NostrMlsSqliteStorage>>,
-        mut client: Client,
+        client: Client,
         keys: Keys,
         key_storage: KeyStorage,
         initial_page: Page,
@@ -195,21 +195,24 @@ impl App {
             }
             AppEvent::SendMessage(content) => {
                 if let Page::Chat {
-                    group_id, input, messages, ..
+                    group_id,
+                    input,
+                    messages,
+                    ..
                 } = &mut self.current_page
                 {
                     if !content.is_empty() {
                         // Create the MLS message (following mls_memory.rs pattern)
                         let rumor = EventBuilder::new(Kind::Custom(9), content.clone())
                             .build(self.keys.public_key());
-                        
+
                         match self.storage.create_message(group_id, rumor) {
                             Ok(message_event) => {
                                 // Publish the message to relays
                                 match self.client.send_event(&message_event).await {
                                     Ok(_) => {
                                         log::info!("Message sent successfully");
-                                        
+
                                         // Add to local messages immediately for UI feedback
                                         messages.push(Message {
                                             content: content.clone(),
@@ -218,15 +221,15 @@ impl App {
                                         });
                                     }
                                     Err(e) => {
-                                        log::error!("Failed to send message: {}", e);
+                                        log::error!("Failed to send message: {e}");
                                     }
                                 }
                             }
                             Err(e) => {
-                                log::error!("Failed to create MLS message: {}", e);
+                                log::error!("Failed to create MLS message: {e}");
                             }
                         }
-                        
+
                         input.clear();
                         let _ = self.state_tx.send(self.current_page.clone());
                     }
@@ -281,52 +284,63 @@ impl App {
                                     "Processing welcome event from {}",
                                     unwrapped.sender.to_bech32().unwrap_or_default()
                                 );
-                                
+
                                 // Process the welcome to join the group (follows mls_memory.rs pattern)
                                 // First, process the welcome to add it to pending welcomes
                                 match self.storage.process_welcome(
-                                    &gift_wrap.id, // Use the gift wrap event ID
+                                    &gift_wrap.id,    // Use the gift wrap event ID
                                     &unwrapped.rumor, // Pass the rumor directly
                                 ) {
                                     Ok(welcome) => {
                                         log::info!("Processed welcome for group '{}', now accepting to join", welcome.group_name);
-                                        
+
                                         // Get the group IDs from the welcome before accepting
                                         let group_id = welcome.mls_group_id.clone();
-                                        let nostr_group_id = welcome.nostr_group_id.clone();
-                                        
+                                        let nostr_group_id = welcome.nostr_group_id;
+
                                         // Accept the welcome to actually join the group
                                         match self.storage.accept_welcome(&welcome) {
                                             Ok(()) => {
-                                                log::info!("Successfully joined group: {:?}", group_id);
-                                                
+                                                log::info!(
+                                                    "Successfully joined group: {group_id:?}"
+                                                );
+
                                                 // Subscribe to messages for this group
                                                 let h_tag_value = hex::encode(nostr_group_id);
                                                 let filter = Filter::new()
                                                     .kind(Kind::MlsGroupMessage)
-                                                    .custom_tag(SingleLetterTag::lowercase(Alphabet::H), h_tag_value)
+                                                    .custom_tag(
+                                                        SingleLetterTag::lowercase(Alphabet::H),
+                                                        h_tag_value,
+                                                    )
                                                     .limit(100);
                                                 self.client.subscribe(filter, None).await?;
                                                 log::info!("Subscribed to messages for new group");
-                                                
+
                                                 // Navigate to chat with the new group
-                                                self.navigate_to(PageType::Chat(Some(group_id))).await?;
+                                                self.navigate_to(PageType::Chat(Some(group_id)))
+                                                    .await?;
                                             }
                                             Err(e) => {
-                                                log::error!("Failed to accept welcome: {}", e);
+                                                log::error!("Failed to accept welcome: {e}");
                                             }
                                         }
                                     }
                                     Err(e) => {
-                                        log::error!("Failed to process welcome: {}", e);
+                                        log::error!("Failed to process welcome: {e}");
                                     }
                                 }
                             } else {
-                                log::debug!("Received non-welcome GiftWrap of kind {:?}", unwrapped.rumor.kind);
+                                log::debug!(
+                                    "Received non-welcome GiftWrap of kind {:?}",
+                                    unwrapped.rumor.kind
+                                );
                             }
                         }
                         Err(e) => {
-                            log::debug!("Failed to extract rumor from gift wrap (might not be for us): {}", e);
+                            log::debug!(
+                                "Failed to extract rumor from gift wrap (might not be for us): {e}"
+                            );
                         }
                     }
                 }
@@ -334,30 +348,34 @@ impl App {
             AppEvent::RawMessagesReceived { events } => {
                 // Process incoming MLS messages
                 log::info!("Received {} MLS message events", events.len());
-                
+
                 for event in events {
                     match self.storage.process_message(&event) {
                         Ok(result) => {
                             match result {
                                 MessageProcessingResult::ApplicationMessage(msg) => {
-                                    log::info!("Received message in group {:?}: {}", 
-                                        msg.mls_group_id, msg.content);
-                                    
+                                    log::info!(
+                                        "Received message in group {:?}: {}",
+                                        msg.mls_group_id,
+                                        msg.content
+                                    );
+
                                     // Convert group ID for comparison
                                     let group_id = GroupId::from_slice(msg.mls_group_id.as_slice());
-                                    
+
                                     // Update UI if this is the current chat
-                                    if let Page::Chat { 
-                                        group_id: current_group_id, 
-                                        messages, 
-                                        .. 
-                                    } = &mut self.current_page {
+                                    if let Page::Chat {
+                                        group_id: current_group_id,
+                                        messages,
+                                        ..
+                                    } = &mut self.current_page
+                                    {
                                         if *current_group_id == group_id {
                                             // Add message to current chat
                                             messages.push(Message {
                                                 content: msg.content.clone(),
                                                 sender: msg.pubkey,
-                                                timestamp: Timestamp::from(msg.created_at),
+                                                timestamp: msg.created_at,
                                             });
                                             let _ = self.state_tx.send(self.current_page.clone());
                                         }
@@ -378,7 +396,7 @@ impl App {
                             }
                         }
                         Err(e) => {
-                            log::error!("Failed to process message: {}", e);
+                            log::error!("Failed to process message: {e}");
                         }
                     }
                 }
@@ -687,43 +705,8 @@ impl App {
         Ok(members)
     }
 
-    async fn load_available_contacts(&self) -> Result<Vec<crate::ui_state::Contact>> {
-        let profiles = self.profiles.lock().await;
-        let contacts = profiles
-            .iter()
-            .map(|(pk, metadata)| crate::ui_state::Contact {
-                public_key: *pk,
-                display_name: metadata.display_name.clone(),
-                metadata: Some(metadata.clone()),
-            })
-            .collect();
-        Ok(contacts)
-    }
-
-    async fn load_current_settings(&self) -> Result<crate::ui_state::UserSettings> {
-        let profiles = self.profiles.lock().await;
-        let my_metadata = profiles.get(&self.keys.public_key());
-        let display_name = my_metadata
-            .and_then(|m| m.display_name.clone())
-            .unwrap_or_else(|| "Anonymous".to_string());
-
-        let relays = self
-            .client
-            .relays()
-            .await
-            .keys()
-            .map(|url| url.to_string())
-            .collect();
-
-        Ok(crate::ui_state::UserSettings {
-            display_name,
-            relays,
-            notification_enabled: true,
-        })
-    }
-
     async fn process_command(&mut self, command: String) -> Result<()> {
-        log::info!("Processing command: {}", command);
+        log::info!("Processing command: {command}");
         let parts: Vec<&str> = command.split_whitespace().collect();
         if parts.is_empty() {
             return Ok(());
@@ -734,7 +717,7 @@ impl App {
                 // Show our public key
                 let npub = self.keys.public_key().to_bech32()?;
                 self.flash = Some((
-                    format!("Your npub: {}", npub),
+                    format!("Your npub: {npub}"),
                     std::time::Instant::now() + std::time::Duration::from_secs(10),
                 ));
             }
@@ -756,7 +739,7 @@ impl App {
                     }
                     Err(e) => {
                         self.flash = Some((
-                            format!("Invalid npub: {}", e),
+                            format!("Invalid npub: {e}"),
                             std::time::Instant::now() + std::time::Duration::from_secs(5),
                         ));
                     }
@@ -823,7 +806,7 @@ impl App {
         // Check if we're already in a group with this person
         let already_in_group = match &self.current_page {
             Page::Chat { groups, .. } => {
-                groups.iter().any(|group_summary| {
+                groups.iter().any(|_group_summary| {
                     // TODO: check if other_pubkey is in this group
                     // For now, just assume no duplicates
                     false
@@ -835,7 +818,7 @@ impl App {
         if already_in_group {
             let npub_str = other_pubkey.to_bech32()?;
             self.flash = Some((
-                format!("Already in a group with {}", npub_str),
+                format!("Already in a group with {npub_str}"),
                 std::time::Instant::now() + std::time::Duration::from_secs(5),
             ));
             return Ok(());
@@ -941,10 +924,10 @@ impl App {
             }
             Err(e) => {
                 self.flash = Some((
-                    format!("Failed to create group: {}", e),
+                    format!("Failed to create group: {e}"),
                     std::time::Instant::now() + std::time::Duration::from_secs(5),
                 ));
-                log::error!("Failed to create group: {}", e);
+                log::error!("Failed to create group: {e}");
             }
         }
 

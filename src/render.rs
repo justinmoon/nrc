@@ -1,7 +1,5 @@
 use nrc::app::App;
-use nrc::ui_state::{
-    Contact, GroupSummary, Message, Modal, OnboardingMode, Page, SettingField, UserSettings,
-};
+use nrc::ui_state::{GroupSummary, Message, Modal, OnboardingMode, Page};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
@@ -140,66 +138,12 @@ fn render_initializing(f: &mut Frame, message: &str, _progress: f32) {
     f.render_widget(paragraph, area);
 }
 
-fn render_group_list(
-    f: &mut Frame,
-    groups: &[GroupSummary],
-    selected_index: usize,
-    _filter: &Option<String>,
-) {
-    let size = f.area();
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // Title
-            Constraint::Min(0),    // Groups
-            Constraint::Length(3), // Help
-        ])
-        .split(size);
-
-    let title = Paragraph::new("Groups")
-        .style(Style::default().fg(Color::Green))
-        .block(Block::default().borders(Borders::ALL));
-    f.render_widget(title, chunks[0]);
-
-    let items: Vec<ListItem> = groups
-        .iter()
-        .enumerate()
-        .map(|(i, group)| {
-            let style = if i == selected_index {
-                Style::default().bg(Color::Blue).fg(Color::White)
-            } else {
-                Style::default()
-            };
-
-            let last_msg = group
-                .last_message
-                .as_ref()
-                .map(|m| format!(" - {}", m.content))
-                .unwrap_or_default();
-
-            ListItem::new(format!(
-                "{} ({}){}",
-                group.name, group.member_count, last_msg
-            ))
-            .style(style)
-        })
-        .collect();
-
-    let list = List::new(items).block(Block::default().borders(Borders::ALL));
-    f.render_widget(list, chunks[1]);
-
-    let help = Paragraph::new("↑/↓: Navigate, Enter: Join group, Ctrl+N: New group, F1: Help")
-        .style(Style::default().fg(Color::Gray))
-        .block(Block::default().borders(Borders::ALL));
-    f.render_widget(help, chunks[2]);
-}
-
+#[allow(clippy::too_many_arguments)]
 fn render_chat(
     f: &mut Frame,
     groups: &[GroupSummary],
     selected_group_index: usize,
-    group_info: &nrc_mls_storage::groups::types::Group,
+    _group_info: &nrc_mls_storage::groups::types::Group,
     messages: &[Message],
     input: &str,
     scroll_offset: usize,
@@ -302,54 +246,6 @@ fn render_chat(
         .style(Style::default())
         .block(Block::default().borders(Borders::ALL).title("INPUT"));
     f.render_widget(input_widget, chat_chunks[3]);
-}
-
-fn render_create_group(
-    f: &mut Frame,
-    name_input: &str,
-    _member_search: &str,
-    _selected_members: &[nostr_sdk::PublicKey],
-    _available_members: &[Contact],
-) {
-    let size = f.area();
-
-    let text = Text::from(vec![
-        Line::from("Create New Group"),
-        Line::from(""),
-        Line::from(format!("Group name: {name_input}")),
-        Line::from(""),
-        Line::from("Press Enter to create, Esc to cancel"),
-    ]);
-
-    let paragraph =
-        Paragraph::new(text).block(Block::default().borders(Borders::ALL).title("Create Group"));
-    f.render_widget(paragraph, size);
-}
-
-fn render_settings(
-    f: &mut Frame,
-    _current_settings: &UserSettings,
-    edited_settings: &UserSettings,
-    _selected_field: &SettingField,
-) {
-    let size = f.area();
-
-    let text = Text::from(vec![
-        Line::from("Settings"),
-        Line::from(""),
-        Line::from(format!("Display Name: {}", edited_settings.display_name)),
-        Line::from(format!("Relays: {}", edited_settings.relays.join(", "))),
-        Line::from(format!(
-            "Notifications: {}",
-            edited_settings.notification_enabled
-        )),
-        Line::from(""),
-        Line::from("Press Esc to go back"),
-    ]);
-
-    let paragraph =
-        Paragraph::new(text).block(Block::default().borders(Borders::ALL).title("Settings"));
-    f.render_widget(paragraph, size);
 }
 
 fn render_help(f: &mut Frame, _selected_section: usize) {

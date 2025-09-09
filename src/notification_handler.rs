@@ -9,9 +9,13 @@ pub mod test_helpers {
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
+    // Type alias to simplify complex type
+    type EventLog = Vec<(String, Event)>;
+    type EventLogsMap = HashMap<String, Arc<Mutex<EventLog>>>;
+
     // Global event log for tests - maps client ID to event log
     lazy_static::lazy_static! {
-        pub static ref TEST_EVENT_LOGS: Arc<Mutex<HashMap<String, Arc<Mutex<Vec<(String, Event)>>>>>> =
+        pub static ref TEST_EVENT_LOGS: Arc<Mutex<EventLogsMap>> =
             Arc::new(Mutex::new(HashMap::new()));
     }
 

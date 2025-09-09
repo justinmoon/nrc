@@ -26,6 +26,7 @@ impl TestApp {
 
         // Set up storage
         let db_path = temp_dir.join("test.db");
+        #[allow(clippy::arc_with_non_send_sync)]
         let storage = Arc::new(NostrMls::new(NostrMlsSqliteStorage::new(db_path)?));
 
         // Create client
@@ -69,6 +70,7 @@ impl TestApp {
 
         // Set up storage
         let db_path = temp_dir.join("test.db");
+        #[allow(clippy::arc_with_non_send_sync)]
         let storage = Arc::new(NostrMls::new(NostrMlsSqliteStorage::new(db_path)?));
 
         // Create client
@@ -128,6 +130,7 @@ impl TestApp {
         self.app.handle_event(event).await
     }
 
+    #[allow(dead_code)]
     async fn send_ctrl_n(&mut self) -> Result<()> {
         let event = AppEvent::KeyPress(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
         self.app.handle_event(event).await
@@ -150,9 +153,9 @@ impl TestApp {
 
         // Refresh current page to pick up any new state
         if let Err(e) = self.app.send_event(AppEvent::RefreshCurrentPage) {
-            log::warn!("RefreshCurrentPage event failed: {}", e);
+            log::warn!("RefreshCurrentPage event failed: {e}");
         }
-        
+
         // Process the refresh event we just sent
         tokio::time::sleep(Duration::from_millis(100)).await;
         if let Some(mut rx) = self.app.event_rx.take() {
@@ -172,6 +175,7 @@ impl TestApp {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn has_messages(&self) -> bool {
         match &self.app.current_page {
             Page::Chat { messages, .. } => !messages.is_empty(),
@@ -227,6 +231,7 @@ impl TestApp {
         println!("=== End Event Log ===\n");
     }
 
+    #[allow(dead_code)]
     async fn log_event(&self, event: Event) {
         let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
         let mut log = self.event_log.lock().await;
@@ -400,8 +405,7 @@ async fn test_existing_user_flow() -> Result<()> {
             // Error message should indicate invalid password
             assert!(
                 err.contains("password") || err.contains("Password"),
-                "Expected password error, got: {}",
-                err
+                "Expected password error, got: {err}"
             );
         }
         _ => panic!("Expected password error, got {:?}", app.app.current_page),
@@ -498,7 +502,7 @@ async fn test_two_users_messaging() -> Result<()> {
 
     // Get Bob's public key (Alice gets this out-of-band)
     let bob_npub = bob.get_npub();
-    println!("Bob's npub: {}", bob_npub);
+    println!("Bob's npub: {bob_npub}");
 
     // IMPORTANT: Give Bob's key package time to propagate to relays
     println!("Waiting for Bob's key package to propagate to relays...");
@@ -506,7 +510,7 @@ async fn test_two_users_messaging() -> Result<()> {
 
     // Alice runs /dm command to create group with Bob
     println!("Alice creating DM with Bob...");
-    alice.send_keys(&format!("/dm {}", bob_npub)).await?;
+    alice.send_keys(&format!("/dm {bob_npub}")).await?;
     alice.send_enter().await?;
 
     // Wait for Alice's /dm command to complete
@@ -514,7 +518,7 @@ async fn test_two_users_messaging() -> Result<()> {
 
     // Check if Alice successfully created the group
     let alice_created_group = alice.has_group();
-    println!("Alice created group: {}", alice_created_group);
+    println!("Alice created group: {alice_created_group}");
 
     if alice_created_group {
         println!("✓ Alice successfully created DM group with Bob");
@@ -530,7 +534,7 @@ async fn test_two_users_messaging() -> Result<()> {
         bob.dump_event_log().await;
 
         let bob_joined_group = bob.has_group();
-        println!("Bob joined group: {}", bob_joined_group);
+        println!("Bob joined group: {bob_joined_group}");
 
         assert!(bob_joined_group, "Bob MUST join the group for test to pass");
         println!("✓ Bob successfully joined the DM group");
@@ -543,10 +547,12 @@ async fn test_two_users_messaging() -> Result<()> {
             _ => vec![],
         };
         assert!(!bob_groups.is_empty(), "Bob should have at least one group");
-        
+
         // Navigate Bob to the first (and only) group
         let group_id = bob_groups[0].id.clone();
-        bob.app.navigate_to(nrc::ui_state::PageType::Chat(Some(group_id))).await?;
+        bob.app
+            .navigate_to(nrc::ui_state::PageType::Chat(Some(group_id)))
+            .await?;
         tokio::time::sleep(Duration::from_millis(500)).await;
         println!("Bob navigated to the DM chat");
 
@@ -556,10 +562,10 @@ async fn test_two_users_messaging() -> Result<()> {
         // Alice sends first message
         println!("Alice sending: 'Hello Bob!'");
         alice.send_message("Hello Bob!").await?;
-        
+
         // Give time to send
         tokio::time::sleep(Duration::from_millis(1000)).await;
-        
+
         // Process any pending events on Alice side (to complete the send)
         alice.process_incoming_messages().await?;
 
@@ -576,7 +582,8 @@ async fn test_two_users_messaging() -> Result<()> {
         let bob_received = bob.get_last_message();
         assert!(bob_received.is_some(), "Bob MUST receive Alice's message");
         assert_eq!(
-            bob_received.unwrap(), "Hello Bob!",
+            bob_received.unwrap(),
+            "Hello Bob!",
             "Bob should have received Alice's exact message"
         );
         println!("✓ Bob received: 'Hello Bob!'");
@@ -584,10 +591,10 @@ async fn test_two_users_messaging() -> Result<()> {
         // Bob sends reply
         println!("Bob sending: 'Hey Alice!'");
         bob.send_message("Hey Alice!").await?;
-        
+
         // Give time to send
         tokio::time::sleep(Duration::from_millis(1000)).await;
-        
+
         // Process any pending events on Bob side (to complete the send)
         bob.process_incoming_messages().await?;
 
@@ -606,10 +613,16 @@ async fn test_two_users_messaging() -> Result<()> {
             Page::Chat { messages, .. } => messages.clone(),
             _ => vec![],
         };
-        
-        assert!(alice_messages.len() >= 2, "Alice should have at least 2 messages");
+
+        assert!(
+            alice_messages.len() >= 2,
+            "Alice should have at least 2 messages"
+        );
         let bob_message = alice_messages.iter().find(|m| m.content == "Hey Alice!");
-        assert!(bob_message.is_some(), "Alice MUST receive Bob's message 'Hey Alice!'");
+        assert!(
+            bob_message.is_some(),
+            "Alice MUST receive Bob's message 'Hey Alice!'"
+        );
         println!("✓ Alice received: 'Hey Alice!'");
 
         println!("✓✓✓ Bidirectional messaging test PASSED ✓✓✓");

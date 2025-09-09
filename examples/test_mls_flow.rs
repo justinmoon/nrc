@@ -43,7 +43,7 @@ async fn main() -> Result<()> {
     );
 
     // Create nostr clients
-    let mut bob_client = Client::default();
+    let bob_client = Client::default();
     bob_client.add_relay(relay_url.clone()).await?;
     bob_client.connect().await;
 
@@ -61,7 +61,7 @@ async fn main() -> Result<()> {
 
     // Alice fetches Bob's key package
     println!("\n4. Alice fetches Bob's key package...");
-    let mut alice_client = Client::default();
+    let alice_client = Client::default();
     alice_client.add_relay(relay_url.clone()).await?;
     alice_client.connect().await;
 
@@ -112,7 +112,7 @@ async fn main() -> Result<()> {
         println!("   Group created!");
         println!(
             "   Group ID: {:?}",
-            hex::encode(&result.group.nostr_group_id)
+            hex::encode(result.group.nostr_group_id)
         );
         println!("   Welcome messages: {}", result.welcome_rumors.len());
     } else {
