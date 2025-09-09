@@ -20,6 +20,18 @@ impl Nrc {
         Ok(())
     }
 
+    pub async fn fetch_welcomes_async(&mut self) -> Result<()> {
+        // Use network task channel instead of direct network call
+        if let Some(command_tx) = &self.command_tx {
+            command_tx
+                .send(crate::NetworkCommand::FetchWelcomes)
+                .await?;
+        } else {
+            return Err(anyhow::anyhow!("Network task not initialized"));
+        }
+        Ok(())
+    }
+
     pub async fn fetch_and_process_messages(&mut self) -> Result<()> {
         let groups = match &self.state {
             AppState::Ready { groups, .. } => groups.clone(),

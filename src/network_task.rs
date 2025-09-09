@@ -237,23 +237,42 @@ impl NetworkTaskState {
     }
 
     async fn fetch_welcomes(&self) -> Result<()> {
-        let filter = Filter::new()
-            .kind(Kind::GiftWrap)
-            .pubkey(self.keys.public_key());
+        let filter = Filter::new().kind(Kind::GiftWrap).custom_tag(
+            SingleLetterTag::lowercase(Alphabet::P),
+            self.keys.public_key().to_hex(),
+        );
 
-        let opts = SubscribeAutoCloseOptions::default()
-            .exit_policy(ReqExitPolicy::ExitOnEOSE)
-            .timeout(Some(Duration::from_secs(10)));
+        log::debug!(
+            "Fetching welcomes with filter: kind=GiftWrap, p-tag={}",
+            self.keys.public_key().to_hex()
+        );
 
-        self.client.subscribe(filter.clone(), Some(opts)).await?;
-        tokio::time::sleep(Duration::from_secs(11)).await;
+        // Use fetch_events instead of subscribe/sleep/query for more reliable test behavior
+        let events = self
+            .client
+            .fetch_events(filter.clone(), Duration::from_secs(10))
+            .await?;
 
-        let events = self.client.database().query(filter).await?;
+        log::debug!(
+            "Found {} GiftWrap events for welcome processing",
+            events.len()
+        );
+
         if !events.is_empty() {
             let events_vec: Vec<Event> = events.into_iter().collect();
+            for event in &events_vec {
+                log::debug!(
+                    "Welcome event: {} from {} at {}",
+                    event.id,
+                    event.pubkey,
+                    event.created_at
+                );
+            }
             let _ = self
                 .event_tx
                 .send(AppEvent::RawWelcomesReceived { events: events_vec });
+        } else {
+            log::debug!("No GiftWrap events found for welcome processing");
         }
         Ok(())
     }
@@ -347,12 +366,17 @@ pub async fn spawn_network_task(
                         log::error!("Failed to fetch messages: {e}");
                     }
                 },
-                NetworkCommand::FetchWelcomes => match state.fetch_welcomes().await {
-                    Ok(()) => {}
-                    Err(e) => {
-                        log::error!("Failed to fetch welcomes: {e}");
+                NetworkCommand::FetchWelcomes => {
+                    log::debug!("Network task received FetchWelcomes command");
+                    match state.fetch_welcomes().await {
+                        Ok(()) => {
+                            log::debug!("FetchWelcomes completed successfully");
+                        }
+                        Err(e) => {
+                            log::error!("Failed to fetch welcomes: {e}");
+                        }
                     }
-                },
+                }
             }
         }
     });

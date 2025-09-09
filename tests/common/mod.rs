@@ -107,7 +107,7 @@ impl TestClient {
     /// Directly trigger fetch welcomes (no longer uses timer events)
     pub async fn trigger_fetch_welcomes(&self) -> Result<()> {
         let mut nrc = self.nrc.lock().await;
-        nrc.fetch_and_process_welcomes().await?;
+        nrc.fetch_welcomes_async().await?;
         Ok(())
     }
 
@@ -166,9 +166,17 @@ impl TestClient {
                     }
                 }
                 AppEvent::RawWelcomesReceived { events } => {
+                    log::debug!("TestClient processing {} welcome events", events.len());
                     for event in events {
+                        log::debug!(
+                            "Processing welcome event: {} from {}",
+                            event.id,
+                            event.pubkey
+                        );
                         if let Err(e) = nrc.process_welcome_event(event).await {
                             log::debug!("Failed to process welcome: {e}");
+                        } else {
+                            log::debug!("Welcome event processed successfully");
                         }
                     }
                 }
