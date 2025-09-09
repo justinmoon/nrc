@@ -1,4 +1,4 @@
-use crate::{AppEvent, ReactiveAppEvent};
+use crate::AppEvent;
 use crossterm::event::{self, Event};
 use std::thread;
 use std::time::Duration;
@@ -21,22 +21,5 @@ pub fn spawn_keyboard_listener(tx: mpsc::UnboundedSender<AppEvent>) {
             }
             thread::sleep(Duration::from_millis(10));
         }
-    });
-}
-
-pub fn spawn_reactive_keyboard_listener(tx: mpsc::UnboundedSender<ReactiveAppEvent>) {
-    thread::spawn(move || loop {
-        if event::poll(Duration::ZERO).unwrap_or(false) {
-            match event::read() {
-                Ok(Event::Key(key)) => {
-                    let _ = tx.send(ReactiveAppEvent::KeyPress(key));
-                }
-                Ok(Event::Paste(text)) => {
-                    let _ = tx.send(ReactiveAppEvent::Paste(text));
-                }
-                _ => {}
-            }
-        }
-        thread::sleep(Duration::from_millis(10));
     });
 }

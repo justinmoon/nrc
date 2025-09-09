@@ -11,7 +11,6 @@ use tokio::sync::{mpsc, watch, Mutex};
 use crate::events::{AppEvent, NetworkCommand};
 use crate::key_storage::KeyStorage;
 use crate::ui_state::{GroupSummary, Message, Modal, Page, PageType};
-use crate::ReactiveAppEvent;
 
 pub struct App {
     pub current_page: Page,
@@ -327,7 +326,7 @@ impl App {
             (Page::Chat { input, .. }, KeyCode::Enter) => {
                 if !input.is_empty() {
                     let input_content = input.clone();
-                    self.send_event(ReactiveAppEvent::SendMessage(input_content))?;
+                    self.send_event(AppEvent::SendMessage(input_content))?;
                 }
             }
             (

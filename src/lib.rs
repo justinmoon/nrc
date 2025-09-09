@@ -1,40 +1,29 @@
-use crate::config::get_default_relays;
-use crate::key_storage::KeyStorage;
-use anyhow::Result;
-use nostr_sdk::prelude::*;
-use nrc_mls::NostrMls;
-use nrc_mls_sqlite_storage::NostrMlsSqliteStorage;
-use nrc_mls_storage::groups::types as group_types;
-use openmls::group::GroupId;
-use std::collections::HashMap;
-use std::path::Path;
-use std::time::Duration;
-use tokio::sync::mpsc;
-
 // Module declarations
 pub mod app;
-pub mod commands;
 pub mod config;
 pub mod events;
-pub mod groups;
 pub mod key_storage;
-pub mod messages;
-pub mod network;
 pub mod notification_handler;
-pub mod profiles;
-pub mod state;
-pub mod types;
 pub mod ui_state;
 pub mod utils;
+
+// Old modules kept for Nrc compatibility - will be removed when tests are migrated
+// pub mod commands;
+// pub mod groups;
+// pub mod messages;
+// pub mod network;
+// pub mod profiles;
 
 // Re-export commonly used types
 pub use app::App;
 pub use config::DEFAULT_RELAYS;
-pub use events::{AppEvent as ReactiveAppEvent, NetworkCommand as ReactiveNetworkCommand};
-pub use types::{AppEvent, AppState, Message, NetworkCommand, OnboardingData, OnboardingMode};
+pub use events::AppEvent;
 pub use ui_state::{Page, PageType};
 pub use utils::pubkey_to_bech32_safe;
 
+// Nrc struct kept for backward compatibility with tests
+// TODO: Migrate tests to use App directly
+/*
 pub struct Nrc {
     pub(crate) storage: Box<NostrMls<NostrMlsSqliteStorage>>,
     pub keys: Keys,
@@ -57,6 +46,12 @@ pub struct Nrc {
     pub onboarding_data: types::OnboardingData,
 }
 
+*/
+
+// Temporary stub for tests
+pub struct Nrc;
+
+/*
 impl Nrc {
     pub async fn new(datadir: &Path) -> Result<Self> {
         // Create datadir if it doesn't exist
@@ -131,3 +126,4 @@ impl Nrc {
         })
     }
 }
+*/
