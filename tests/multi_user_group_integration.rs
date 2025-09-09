@@ -13,6 +13,11 @@ async fn test_multi_user_group_creation_and_chat() -> Result<()> {
     let bob = TestClient::new("bob").await?;
     let _charlie = TestClient::new("charlie").await?;
 
+    // Publish key packages for all clients
+    alice.execute_command("/n").await?;
+    bob.execute_command("/n").await?;
+    _charlie.execute_command("/n").await?;
+
     // Give everyone's key packages time to propagate to relays
     tokio::time::sleep(Duration::from_secs(3)).await;
 
@@ -170,6 +175,10 @@ async fn test_multi_user_group_with_members_command() -> Result<()> {
     let alice = TestClient::new("alice").await?;
     let bob = TestClient::new("bob").await?;
 
+    // Publish key packages for both clients
+    alice.execute_command("/n").await?;
+    bob.execute_command("/n").await?;
+
     // Give key packages time to propagate
     tokio::time::sleep(Duration::from_secs(2)).await;
 
@@ -249,6 +258,10 @@ async fn test_multi_user_group_leave_command() -> Result<()> {
     let alice = TestClient::new("alice").await?;
     let bob = TestClient::new("bob").await?;
 
+    // Publish key packages for both clients
+    alice.execute_command("/n").await?;
+    bob.execute_command("/n").await?;
+
     // Give key packages time to propagate
     tokio::time::sleep(Duration::from_secs(2)).await;
 
@@ -288,6 +301,11 @@ async fn test_group_name_display_differentiation() -> Result<()> {
     let alice = TestClient::new("alice").await?;
     let bob = TestClient::new("bob").await?;
     let charlie = TestClient::new("charlie").await?;
+
+    // Publish key packages for all clients
+    alice.execute_command("/n").await?;
+    bob.execute_command("/n").await?;
+    charlie.execute_command("/n").await?;
 
     // Give key packages time to propagate
     tokio::time::sleep(Duration::from_secs(3)).await;
