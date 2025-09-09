@@ -20,12 +20,14 @@ pub fn render(f: &mut Frame, app: &App) {
             filter,
         } => render_group_list(f, groups, *selected_index, filter),
         Page::Chat {
+            groups,
+            selected_group_index,
             group_info,
             messages,
             input,
             scroll_offset,
             ..
-        } => render_chat(f, group_info.as_ref(), messages, input, *scroll_offset),
+        } => render_chat(f, groups, *selected_group_index, group_info.as_ref(), messages, input, *scroll_offset, &app.flash),
         Page::CreateGroup {
             name_input,
             member_search,
@@ -208,46 +210,112 @@ fn render_group_list(
 
 fn render_chat(
     f: &mut Frame,
+    groups: &[GroupSummary],
+    selected_group_index: usize,
     group_info: &nrc_mls_storage::groups::types::Group,
     messages: &[Message],
     input: &str,
     scroll_offset: usize,
+    flash: &Option<(String, std::time::Instant)>,
 ) {
     let size = f.area();
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
+    // Split horizontally: groups list on left, chat on right
+    let main_chunks = Layout::default()
+        .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(3), // Header
-            Constraint::Min(0),    // Messages
-            Constraint::Length(3), // Input
+            Constraint::Length(30), // Groups sidebar
+            Constraint::Min(0),     // Chat area
         ])
         .split(size);
 
-    let header = Paragraph::new(format!("Chat: {} (0 members)", group_info.name))
-        .style(Style::default().fg(Color::Green))
+    // Render groups sidebar with "CHATS" header
+    let groups_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // Header
+            Constraint::Min(0),    // Groups list
+        ])
+        .split(main_chunks[0]);
+
+    let groups_header = Paragraph::new("CHATS")
+        .style(Style::default().fg(Color::DarkGray))
         .block(Block::default().borders(Borders::ALL));
-    f.render_widget(header, chunks[0]);
+    f.render_widget(groups_header, groups_chunks[0]);
 
-    let visible_messages = messages
+    // Render group list
+    let group_items: Vec<ListItem> = groups
         .iter()
-        .skip(scroll_offset)
-        .take(chunks[1].height as usize - 2);
-
-    let message_items: Vec<ListItem> = visible_messages
-        .map(|msg| {
-            let sender = format!("{}", msg.sender);
-            ListItem::new(format!("{sender}: {}", msg.content))
+        .enumerate()
+        .map(|(i, group)| {
+            let style = if i == selected_group_index {
+                Style::default().bg(Color::Blue).fg(Color::White)
+            } else {
+                Style::default()
+            };
+            ListItem::new(group.name.clone()).style(style)
         })
         .collect();
 
-    let messages_list = List::new(message_items).block(Block::default().borders(Borders::ALL));
-    f.render_widget(messages_list, chunks[1]);
+    let groups_list = List::new(group_items)
+        .block(Block::default().borders(Borders::ALL));
+    f.render_widget(groups_list, groups_chunks[1]);
 
+    // Split chat area vertically
+    let chat_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),  // Header "CHAT"
+            Constraint::Min(0),     // Messages area
+            Constraint::Length(2),  // Flash/error area (hidden when not used)
+            Constraint::Length(3),  // Input area with "INPUT" label
+        ])
+        .split(main_chunks[1]);
+
+    // Render chat header
+    let chat_header = Paragraph::new("CHAT")
+        .style(Style::default().fg(Color::DarkGray))
+        .block(Block::default().borders(Borders::ALL));
+    f.render_widget(chat_header, chat_chunks[0]);
+
+    // Render messages
+    let visible_messages = messages
+        .iter()
+        .skip(scroll_offset)
+        .take(chat_chunks[1].height as usize - 2);
+
+    let message_lines: Vec<Line> = visible_messages
+        .map(|msg| {
+            // Format sender with shortened pubkey
+            let sender_str = format!("{}", msg.sender);
+            let sender_short = if sender_str.len() > 8 {
+                format!("{}...", &sender_str[..8])
+            } else {
+                sender_str
+            };
+            Line::from(format!("{}: {}", sender_short, msg.content))
+        })
+        .collect();
+
+    let messages_widget = Paragraph::new(message_lines)
+        .block(Block::default().borders(Borders::ALL));
+    f.render_widget(messages_widget, chat_chunks[1]);
+
+    // Render flash/error area if there's a message
+    if let Some((msg, expiry)) = flash {
+        if std::time::Instant::now() < *expiry {
+            let flash_widget = Paragraph::new(msg.as_str())
+                .style(Style::default().fg(Color::Yellow))
+                .block(Block::default().borders(Borders::ALL));
+            f.render_widget(flash_widget, chat_chunks[2]);
+        }
+    }
+
+    // Render input area with "INPUT" label
     let input_widget = Paragraph::new(input)
         .style(Style::default())
-        .block(Block::default().borders(Borders::ALL).title("Message"));
-    f.render_widget(input_widget, chunks[2]);
+        .block(Block::default().borders(Borders::ALL).title("INPUT"));
+    f.render_widget(input_widget, chat_chunks[3]);
 }
 
 fn render_create_group(

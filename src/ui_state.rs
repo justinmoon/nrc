@@ -22,6 +22,8 @@ pub enum Page {
     },
 
     Chat {
+        groups: Vec<GroupSummary>,  // All groups for left sidebar
+        selected_group_index: usize,  // Which group is selected in sidebar
         group_id: GroupId,
         group_info: Box<group_types::Group>,
         messages: Vec<Message>,
