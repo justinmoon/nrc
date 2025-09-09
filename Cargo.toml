@@ -25,6 +25,11 @@ chrono = "0.4"
 clipboard = "0.5"
 clap = { version = "4.5", features = ["derive"] }
 dirs = "5.0"
+lazy_static = "1.4"
 
 [dev-dependencies]
 tempfile = "3.8"
+
+[[example]]
+name = "test_mls_flow"
+path = "examples/test_mls_flow.rs"
