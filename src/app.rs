@@ -439,15 +439,33 @@ impl App {
             }
             OnboardingMode::CreatePassword | OnboardingMode::EnterPassword => {
                 if input.len() >= 8 {
-                    self.navigate_to(PageType::Initializing).await?;
-
                     if mode == OnboardingMode::EnterPassword {
-                        // TODO: implement key loading validation
-                        // For now, just proceed with initialization
+                        // Validate password by trying to load encrypted keys
+                        match self.key_storage.load_encrypted(&input) {
+                            Ok(loaded_keys) => {
+                                // Password is correct, update keys
+                                self.keys = loaded_keys;
+                                self.navigate_to(PageType::Initializing).await?;
+                                tokio::time::sleep(Duration::from_secs(2)).await;
+                                self.navigate_to(PageType::GroupList).await?;
+                            }
+                            Err(_) => {
+                                // Wrong password
+                                let mut new_page = self.current_page.clone();
+                                if let Page::Onboarding { error, input, .. } = &mut new_page {
+                                    *error = Some("Invalid password. Please try again.".to_string());
+                                    input.clear();
+                                }
+                                self.current_page = new_page.clone();
+                                let _ = self.state_tx.send(new_page);
+                            }
+                        }
+                    } else {
+                        // CreatePassword mode - just save and proceed
+                        self.navigate_to(PageType::Initializing).await?;
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        self.navigate_to(PageType::GroupList).await?;
                     }
-
-                    tokio::time::sleep(Duration::from_secs(2)).await;
-                    self.navigate_to(PageType::GroupList).await?;
                 } else {
                     let mut new_page = self.current_page.clone();
                     if let Page::Onboarding { error, input, .. } = &mut new_page {

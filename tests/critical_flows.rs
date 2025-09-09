@@ -54,6 +54,44 @@ impl TestApp {
         Ok(Self { app, temp_dir })
     }
     
+    async fn with_existing_user(password: &str) -> Result<Self> {
+        // Create unique temp directory
+        let temp_dir = std::env::temp_dir()
+            .join(format!("nrc_test_{}", rand::random::<u32>()));
+        std::fs::create_dir_all(&temp_dir)?;
+        
+        // Set up storage
+        let db_path = temp_dir.join("test.db");
+        let storage = Arc::new(NostrMls::new(NostrMlsSqliteStorage::new(db_path)?));
+        
+        // Create client
+        let client = Client::default();
+        
+        // Generate test keys
+        let keys = Keys::generate();
+        
+        // Create key storage and save encrypted keys
+        let key_storage = KeyStorage::new(&temp_dir);
+        key_storage.save_encrypted(&keys, password)?;
+        
+        // Create app starting at password entry (existing user flow)
+        let initial_page = Page::Onboarding {
+            input: String::new(),
+            mode: OnboardingMode::EnterPassword,
+            error: None,
+        };
+        
+        let app = App::new(
+            storage,
+            client,
+            keys,
+            key_storage,
+            initial_page,
+        ).await?;
+        
+        Ok(Self { app, temp_dir })
+    }
+    
     async fn send_key(&mut self, c: char) -> Result<()> {
         let event = AppEvent::KeyPress(KeyEvent::new(
             KeyCode::Char(c),
@@ -72,6 +110,14 @@ impl TestApp {
     async fn send_enter(&mut self) -> Result<()> {
         let event = AppEvent::KeyPress(KeyEvent::new(
             KeyCode::Enter,
+            KeyModifiers::empty(),
+        ));
+        self.app.handle_event(event).await
+    }
+    
+    async fn send_backspace(&mut self) -> Result<()> {
+        let event = AppEvent::KeyPress(KeyEvent::new(
+            KeyCode::Backspace,
             KeyModifiers::empty(),
         ));
         self.app.handle_event(event).await
@@ -163,6 +209,62 @@ async fn test_new_user_complete_journey() -> Result<()> {
             }
         },
         _ => panic!("Expected GroupList or Initializing, got {:?}", app.app.current_page),
+    }
+    
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_existing_user_flow() -> Result<()> {
+    let password = "testpassword123";
+    let mut app = TestApp::with_existing_user(password).await?;
+    
+    // Should start at password entry for existing user
+    match &app.app.current_page {
+        Page::Onboarding { mode: OnboardingMode::EnterPassword, .. } => {},
+        _ => panic!("Expected EnterPassword mode for existing user, got {:?}", app.app.current_page),
+    }
+    
+    // Try wrong password first
+    app.send_keys("wrongpassword").await?;
+    app.send_enter().await?;
+    
+    // Should show error
+    match &app.app.current_page {
+        Page::Onboarding { error: Some(err), mode: OnboardingMode::EnterPassword, .. } => {
+            // Error message should indicate invalid password
+            assert!(err.contains("password") || err.contains("Password"), 
+                   "Expected password error, got: {}", err);
+        },
+        _ => panic!("Expected password error, got {:?}", app.app.current_page),
+    }
+    
+    // Clear input and enter correct password
+    for _ in 0..13 { // length of "wrongpassword"
+        app.send_backspace().await?;
+    }
+    
+    app.send_keys(password).await?;
+    app.send_enter().await?;
+    
+    // Should proceed to initialization/group list
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    
+    match &app.app.current_page {
+        Page::GroupList { .. } => {
+            // Successfully logged in!
+        },
+        Page::Initializing { .. } => {
+            // Wait for initialization to complete
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            match &app.app.current_page {
+                Page::GroupList { .. } => {
+                    // Successfully logged in!
+                },
+                _ => panic!("Expected GroupList after login, got {:?}", app.app.current_page),
+            }
+        },
+        _ => panic!("Expected GroupList or Initializing after correct password, got {:?}", app.app.current_page),
     }
     
     Ok(())
