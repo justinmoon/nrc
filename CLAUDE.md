@@ -15,3 +15,5 @@
 - do not create issues or prs in github repos not owned by justinmoon without asking first
 - OpenMLS does not support solo groups (groups with only the creator). You need at least one other member to create a group. This is why create_group() with empty vec[] fails with "An empty list of KeyPackages was provided"
 - We are building a real implementation. Never mock functionality with the justification that this isn't a real implementation -- you always do this. If you don't know how to do the real implementation, ask me clarifying questions.
+- In almost all cases we should be subscribing to nostr events -- not fetching them. This is faster and more resource-efficient. Only fetch if subscriptions won't do!
+- ~/code/nrc has lots of useful repos checked out like whitenoise and rust-nostr

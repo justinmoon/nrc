@@ -179,7 +179,6 @@ async fn run_app<B: ratatui::backend::Backend>(
 
     let event_tx = app.event_tx.clone();
     keyboard::spawn_keyboard_listener(event_tx.clone());
-    nrc::notification_handler::spawn_notification_handler(client.clone(), event_tx.clone());
 
     let ops_event_tx = event_tx.clone();
     tokio::spawn(async move {

@@ -68,7 +68,7 @@ impl Nrc {
                 h_tag_value
             );
             let filter = Filter::new()
-                .kind(Kind::from(445u16))
+                .kind(Kind::MlsGroupMessage)
                 .custom_tag(SingleLetterTag::lowercase(Alphabet::H), h_tag_value.clone())
                 .limit(100);
             log::debug!("Filter: kind=445, h-tag={h_tag_value}");
@@ -244,8 +244,8 @@ impl Nrc {
 
         match self.client.unwrap_gift_wrap(&event).await {
             Ok(unwrapped) => {
-                // Check if this is a welcome message (kind 444)
-                if unwrapped.rumor.kind != Kind::from(444u16) {
+                // Check if this is a welcome message
+                if unwrapped.rumor.kind != Kind::MlsWelcome {
                     return Ok(());
                 }
 
@@ -267,7 +267,7 @@ impl Nrc {
                                 // Subscribe to messages for this group
                                 let h_tag_value = hex::encode(group.nostr_group_id);
                                 let filter = Filter::new()
-                                    .kind(Kind::from(445u16))
+                                    .kind(Kind::MlsGroupMessage)
                                     .custom_tag(
                                         SingleLetterTag::lowercase(Alphabet::H),
                                         h_tag_value,

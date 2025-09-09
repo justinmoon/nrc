@@ -14,11 +14,6 @@ pub fn render(f: &mut Frame, app: &App) {
     match &app.current_page {
         Page::Onboarding { input, mode, error } => render_onboarding(f, input, mode, error),
         Page::Initializing { message, progress } => render_initializing(f, message, *progress),
-        Page::GroupList {
-            groups,
-            selected_index,
-            filter,
-        } => render_group_list(f, groups, *selected_index, filter),
         Page::Chat {
             groups,
             selected_group_index,
@@ -27,24 +22,16 @@ pub fn render(f: &mut Frame, app: &App) {
             input,
             scroll_offset,
             ..
-        } => render_chat(f, groups, *selected_group_index, group_info.as_ref(), messages, input, *scroll_offset, &app.flash),
-        Page::CreateGroup {
-            name_input,
-            member_search,
-            selected_members,
-            available_members,
-        } => render_create_group(
+        } => render_chat(
             f,
-            name_input,
-            member_search,
-            selected_members,
-            available_members,
+            groups,
+            *selected_group_index,
+            group_info.as_ref(),
+            messages,
+            input,
+            *scroll_offset,
+            &app.flash,
         ),
-        Page::Settings {
-            current_settings,
-            edited_settings,
-            selected_field,
-        } => render_settings(f, current_settings, edited_settings, selected_field),
         Page::Help { selected_section } => render_help(f, *selected_section),
     }
 
@@ -257,18 +244,17 @@ fn render_chat(
         })
         .collect();
 
-    let groups_list = List::new(group_items)
-        .block(Block::default().borders(Borders::ALL));
+    let groups_list = List::new(group_items).block(Block::default().borders(Borders::ALL));
     f.render_widget(groups_list, groups_chunks[1]);
 
     // Split chat area vertically
     let chat_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),  // Header "CHAT"
-            Constraint::Min(0),     // Messages area
-            Constraint::Length(2),  // Flash/error area (hidden when not used)
-            Constraint::Length(3),  // Input area with "INPUT" label
+            Constraint::Length(3), // Header "CHAT"
+            Constraint::Min(0),    // Messages area
+            Constraint::Length(2), // Flash/error area (hidden when not used)
+            Constraint::Length(3), // Input area with "INPUT" label
         ])
         .split(main_chunks[1]);
 
@@ -297,8 +283,8 @@ fn render_chat(
         })
         .collect();
 
-    let messages_widget = Paragraph::new(message_lines)
-        .block(Block::default().borders(Borders::ALL));
+    let messages_widget =
+        Paragraph::new(message_lines).block(Block::default().borders(Borders::ALL));
     f.render_widget(messages_widget, chat_chunks[1]);
 
     // Render flash/error area if there's a message

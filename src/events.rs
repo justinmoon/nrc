@@ -61,6 +61,9 @@ pub enum AppEvent {
     RawWelcomesReceived {
         events: Vec<Event>,
     },
+    KeyPackageReceived {
+        event: Event,
+    },
 }
 
 #[derive(Debug, Clone)]

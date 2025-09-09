@@ -31,7 +31,7 @@ impl Nrc {
         // Subscribe to messages for this group
         let h_tag_value = hex::encode(group_result.group.nostr_group_id);
         let filter = Filter::new()
-            .kind(Kind::from(445u16))
+            .kind(Kind::MlsGroupMessage)
             .custom_tag(SingleLetterTag::lowercase(Alphabet::H), h_tag_value)
             .limit(100);
         self.client.subscribe(filter, None).await?;
@@ -228,7 +228,7 @@ impl Nrc {
         // Subscribe to messages for this group
         let h_tag_value = hex::encode(group_result.group.nostr_group_id);
         let filter = Filter::new()
-            .kind(Kind::from(445u16))
+            .kind(Kind::MlsGroupMessage)
             .custom_tag(SingleLetterTag::lowercase(Alphabet::H), h_tag_value)
             .limit(100);
         self.client.subscribe(filter, None).await?;
@@ -294,7 +294,7 @@ impl Nrc {
 
         for gift_wrap in events {
             if let Ok(unwrapped) = self.client.unwrap_gift_wrap(&gift_wrap).await {
-                if unwrapped.rumor.kind == Kind::from(444u16) {
+                if unwrapped.rumor.kind == Kind::MlsWelcome {
                     // Process the welcome to add it to pending welcomes
                     let welcome = self
                         .storage

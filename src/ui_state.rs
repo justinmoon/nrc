@@ -15,15 +15,9 @@ pub enum Page {
         progress: f32,
     },
 
-    GroupList {
-        groups: Vec<GroupSummary>,
-        selected_index: usize,
-        filter: Option<String>,
-    },
-
     Chat {
-        groups: Vec<GroupSummary>,  // All groups for left sidebar
-        selected_group_index: usize,  // Which group is selected in sidebar
+        groups: Vec<GroupSummary>,   // All groups for left sidebar
+        selected_group_index: usize, // Which group is selected in sidebar
         group_id: GroupId,
         group_info: Box<group_types::Group>,
         messages: Vec<Message>,
@@ -31,19 +25,6 @@ pub enum Page {
         input: String,
         scroll_offset: usize,
         typing_members: Vec<PublicKey>,
-    },
-
-    CreateGroup {
-        name_input: String,
-        member_search: String,
-        selected_members: Vec<PublicKey>,
-        available_members: Vec<Contact>,
-    },
-
-    Settings {
-        current_settings: UserSettings,
-        edited_settings: UserSettings,
-        selected_field: SettingField,
     },
 
     Help {
@@ -129,10 +110,7 @@ pub enum ModalAction {
 pub enum PageType {
     Onboarding,
     Initializing,
-    GroupList,
-    Chat(GroupId),
-    CreateGroup,
-    Settings,
+    Chat(Option<GroupId>),
     Help,
 }
 
@@ -141,10 +119,7 @@ impl Page {
         match self {
             Page::Onboarding { .. } => PageType::Onboarding,
             Page::Initializing { .. } => PageType::Initializing,
-            Page::GroupList { .. } => PageType::GroupList,
-            Page::Chat { group_id, .. } => PageType::Chat(group_id.clone()),
-            Page::CreateGroup { .. } => PageType::CreateGroup,
-            Page::Settings { .. } => PageType::Settings,
+            Page::Chat { group_id, .. } => PageType::Chat(Some(group_id.clone())),
             Page::Help { .. } => PageType::Help,
         }
     }

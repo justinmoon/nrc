@@ -9,7 +9,7 @@ impl Nrc {
     pub async fn publish_key_package(&mut self) -> Result<()> {
         // First subscribe to key packages so we can verify our own
         let filter = Filter::new()
-            .kind(Kind::from(443u16))
+            .kind(Kind::MlsKeyPackage)
             .author(self.keys.public_key());
         self.client.subscribe(filter, None).await?;
 
@@ -22,7 +22,7 @@ impl Nrc {
             .storage
             .create_key_package_for_event(&self.keys.public_key(), relays)?;
 
-        let event = EventBuilder::new(Kind::from(443u16), key_package_content)
+        let event = EventBuilder::new(Kind::MlsKeyPackage, key_package_content)
             .tags(tags)
             .build(self.keys.public_key())
             .sign(&self.keys)
@@ -55,7 +55,7 @@ impl Nrc {
 
     pub async fn fetch_key_package(&self, pubkey: &PublicKey) -> Result<Event> {
         let filter = Filter::new()
-            .kind(Kind::from(443u16))
+            .kind(Kind::MlsKeyPackage)
             .author(*pubkey)
             .limit(1);
 

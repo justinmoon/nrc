@@ -1,7 +1,8 @@
 use anyhow::Result;
 use nostr_sdk::prelude::*;
+use nostr_sdk::nips::nip59;
 use nrc_mls::groups::NostrGroupConfigData;
-use nrc_mls::NostrMls;
+use nrc_mls::{NostrMls, messages::MessageProcessingResult};
 use nrc_mls_sqlite_storage::NostrMlsSqliteStorage;
 use openmls::group::GroupId;
 use std::collections::HashMap;
@@ -9,6 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch, Mutex};
 
+use crate::config::get_default_relays;
 use crate::events::{AppEvent, NetworkCommand};
 use crate::key_storage::KeyStorage;
 use crate::ui_state::{GroupSummary, Message, Modal, Page, PageType};
@@ -40,7 +42,7 @@ pub struct App {
 impl App {
     pub async fn new(
         storage: Arc<NostrMls<NostrMlsSqliteStorage>>,
-        client: Client,
+        mut client: Client,
         keys: Keys,
         key_storage: KeyStorage,
         initial_page: Page,
@@ -48,6 +50,23 @@ impl App {
         let (state_tx, state_rx) = watch::channel(initial_page.clone());
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let (command_tx, _command_rx) = mpsc::channel(100);
+
+        // Add relays and connect (like master branch does)
+        for &relay in get_default_relays() {
+            if let Err(e) = client.add_relay(relay).await {
+                log::warn!("Failed to add relay {relay}: {e}");
+            }
+        }
+
+        client.connect().await;
+
+        // Spawn notification handler to receive events from relays
+        // This processes incoming welcomes, messages, etc in real-time
+        crate::notification_handler::spawn_notification_handler(
+            client.clone(),
+            event_tx.clone(),
+            keys.public_key(),
+        );
 
         Ok(Self {
             current_page: initial_page,
@@ -81,55 +100,58 @@ impl App {
 
     pub async fn load_page_data(&self, page_type: PageType) -> Result<Page> {
         match page_type {
-            PageType::GroupList => {
+            PageType::Chat(maybe_group_id) => {
                 let groups = self.load_group_summaries().await?;
-                Ok(Page::GroupList {
-                    groups,
-                    selected_index: 0,
-                    filter: None,
-                })
-            }
-            PageType::Chat(group_id) => {
-                let groups = self.load_group_summaries().await?;
-                let selected_group_index = groups
-                    .iter()
-                    .position(|g| g.id == group_id)
-                    .unwrap_or(0);
-                let group_info = self
-                    .storage
-                    .get_group(&group_id)?
-                    .ok_or_else(|| anyhow::anyhow!("Group not found"))?;
-                let messages = self.load_chat_messages(&group_id, 100).await?;
-                let members = self.load_group_members(&group_id).await?;
 
-                Ok(Page::Chat {
-                    groups,
-                    selected_group_index,
-                    group_id,
-                    group_info: Box::new(group_info),
-                    messages,
-                    members,
-                    input: String::new(),
-                    scroll_offset: 0,
-                    typing_members: vec![],
-                })
-            }
-            PageType::CreateGroup => {
-                let available_members = self.load_available_contacts().await?;
-                Ok(Page::CreateGroup {
-                    name_input: String::new(),
-                    member_search: String::new(),
-                    selected_members: vec![],
-                    available_members,
-                })
-            }
-            PageType::Settings => {
-                let current_settings = self.load_current_settings().await?;
-                Ok(Page::Settings {
-                    current_settings: current_settings.clone(),
-                    edited_settings: current_settings,
-                    selected_field: crate::ui_state::SettingField::DisplayName,
-                })
+                // If no group selected, show empty chat
+                if let Some(group_id) = maybe_group_id {
+                    let selected_group_index =
+                        groups.iter().position(|g| g.id == group_id).unwrap_or(0);
+                    let group_info = self
+                        .storage
+                        .get_group(&group_id)?
+                        .ok_or_else(|| anyhow::anyhow!("Group not found"))?;
+                    let messages = self.load_chat_messages(&group_id, 100).await?;
+                    let members = self.load_group_members(&group_id).await?;
+
+                    Ok(Page::Chat {
+                        groups,
+                        selected_group_index,
+                        group_id,
+                        group_info: Box::new(group_info),
+                        messages,
+                        members,
+                        input: String::new(),
+                        scroll_offset: 0,
+                        typing_members: vec![],
+                    })
+                } else {
+                    // No group selected - show empty state
+                    Ok(Page::Chat {
+                        groups,
+                        selected_group_index: 0,
+                        group_id: GroupId::from_slice(&[0u8; 32]),
+                        group_info: Box::new(nrc_mls_storage::groups::types::Group {
+                            mls_group_id: GroupId::from_slice(&[0u8; 32]),
+                            nostr_group_id: [0u8; 32],
+                            name: "Welcome to NRC".to_string(),
+                            description: "Use /dm <npub> to start a conversation".to_string(),
+                            admin_pubkeys: std::collections::BTreeSet::new(),
+                            last_message_id: None,
+                            last_message_at: None,
+                            epoch: 0,
+                            state: nrc_mls_storage::groups::types::GroupState::Active,
+                            image_url: None,
+                            image_key: None,
+                            image_nonce: None,
+                        }),
+                        messages: vec![],
+                        members: vec![],
+                        input: String::new(),
+                        scroll_offset: 0,
+                        typing_members: vec![],
+                    })
+                }
             }
             PageType::Help => Ok(Page::Help {
                 selected_section: 0,
@@ -173,17 +195,38 @@ impl App {
             }
             AppEvent::SendMessage(content) => {
                 if let Page::Chat {
-                    group_id, input, ..
+                    group_id, input, messages, ..
                 } = &mut self.current_page
                 {
                     if !content.is_empty() {
-                        let _ = self
-                            .command_tx
-                            .send(NetworkCommand::SendMessage {
-                                group_id: group_id.clone(),
-                                content,
-                            })
-                            .await;
+                        // Create the MLS message (following mls_memory.rs pattern)
+                        let rumor = EventBuilder::new(Kind::Custom(9), content.clone())
+                            .build(self.keys.public_key());
+                        
+                        match self.storage.create_message(group_id, rumor) {
+                            Ok(message_event) => {
+                                // Publish the message to relays
+                                match self.client.send_event(&message_event).await {
+                                    Ok(_) => {
+                                        log::info!("Message sent successfully");
+                                        
+                                        // Add to local messages immediately for UI feedback
+                                        messages.push(Message {
+                                            content: content.clone(),
+                                            sender: self.keys.public_key(),
+                                            timestamp: Timestamp::now(),
+                                        });
+                                    }
+                                    Err(e) => {
+                                        log::error!("Failed to send message: {}", e);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                log::error!("Failed to create MLS message: {}", e);
+                            }
+                        }
+                        
                         input.clear();
                         let _ = self.state_tx.send(self.current_page.clone());
                     }
@@ -194,10 +237,10 @@ impl App {
                     .command_tx
                     .send(NetworkCommand::CreateGroup { name })
                     .await;
-                self.navigate_to(PageType::GroupList).await?;
+                self.navigate_to(PageType::Chat(None)).await?;
             }
             AppEvent::JoinGroup(group_id) => {
-                self.navigate_to(PageType::Chat(group_id)).await?;
+                self.navigate_to(PageType::Chat(Some(group_id))).await?;
             }
             AppEvent::FlashMessage(msg, duration) => {
                 self.flash = Some((msg, Instant::now() + duration));
@@ -223,6 +266,129 @@ impl App {
                         let _ = self.state_tx.send(self.current_page.clone());
                     }
                 }
+            }
+            AppEvent::RawWelcomesReceived { events } => {
+                // Process incoming GiftWrap events (welcomes)
+                for gift_wrap in events {
+                    log::info!("Processing incoming GiftWrap event: {}", gift_wrap.id);
+
+                    // Use extract_rumor to properly unwrap the gift wrap (like whitenoise does)
+                    match nip59::extract_rumor(&self.keys, &gift_wrap).await {
+                        Ok(unwrapped) => {
+                            // Check if it's a welcome event
+                            if unwrapped.rumor.kind == Kind::MlsWelcome {
+                                log::info!(
+                                    "Processing welcome event from {}",
+                                    unwrapped.sender.to_bech32().unwrap_or_default()
+                                );
+                                
+                                // Process the welcome to join the group (follows mls_memory.rs pattern)
+                                // First, process the welcome to add it to pending welcomes
+                                match self.storage.process_welcome(
+                                    &gift_wrap.id, // Use the gift wrap event ID
+                                    &unwrapped.rumor, // Pass the rumor directly
+                                ) {
+                                    Ok(welcome) => {
+                                        log::info!("Processed welcome for group '{}', now accepting to join", welcome.group_name);
+                                        
+                                        // Get the group IDs from the welcome before accepting
+                                        let group_id = welcome.mls_group_id.clone();
+                                        let nostr_group_id = welcome.nostr_group_id.clone();
+                                        
+                                        // Accept the welcome to actually join the group
+                                        match self.storage.accept_welcome(&welcome) {
+                                            Ok(()) => {
+                                                log::info!("Successfully joined group: {:?}", group_id);
+                                                
+                                                // Subscribe to messages for this group
+                                                let h_tag_value = hex::encode(nostr_group_id);
+                                                let filter = Filter::new()
+                                                    .kind(Kind::MlsGroupMessage)
+                                                    .custom_tag(SingleLetterTag::lowercase(Alphabet::H), h_tag_value)
+                                                    .limit(100);
+                                                self.client.subscribe(filter, None).await?;
+                                                log::info!("Subscribed to messages for new group");
+                                                
+                                                // Navigate to chat with the new group
+                                                self.navigate_to(PageType::Chat(Some(group_id))).await?;
+                                            }
+                                            Err(e) => {
+                                                log::error!("Failed to accept welcome: {}", e);
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        log::error!("Failed to process welcome: {}", e);
+                                    }
+                                }
+                            } else {
+                                log::debug!("Received non-welcome GiftWrap of kind {:?}", unwrapped.rumor.kind);
+                            }
+                        }
+                        Err(e) => {
+                            log::debug!("Failed to extract rumor from gift wrap (might not be for us): {}", e);
+                        }
+                    }
+                }
+            }
+            AppEvent::RawMessagesReceived { events } => {
+                // Process incoming MLS messages
+                log::info!("Received {} MLS message events", events.len());
+                
+                for event in events {
+                    match self.storage.process_message(&event) {
+                        Ok(result) => {
+                            match result {
+                                MessageProcessingResult::ApplicationMessage(msg) => {
+                                    log::info!("Received message in group {:?}: {}", 
+                                        msg.mls_group_id, msg.content);
+                                    
+                                    // Convert group ID for comparison
+                                    let group_id = GroupId::from_slice(msg.mls_group_id.as_slice());
+                                    
+                                    // Update UI if this is the current chat
+                                    if let Page::Chat { 
+                                        group_id: current_group_id, 
+                                        messages, 
+                                        .. 
+                                    } = &mut self.current_page {
+                                        if *current_group_id == group_id {
+                                            // Add message to current chat
+                                            messages.push(Message {
+                                                content: msg.content.clone(),
+                                                sender: msg.pubkey,
+                                                timestamp: Timestamp::from(msg.created_at),
+                                            });
+                                            let _ = self.state_tx.send(self.current_page.clone());
+                                        }
+                                    }
+                                }
+                                MessageProcessingResult::Proposal(_) => {
+                                    log::info!("Received proposal (not yet handled)");
+                                }
+                                MessageProcessingResult::Commit => {
+                                    log::info!("Received commit");
+                                }
+                                MessageProcessingResult::Unprocessable => {
+                                    log::debug!("Message was unprocessable (might be duplicate)");
+                                }
+                                MessageProcessingResult::ExternalJoinProposal => {
+                                    log::info!("Received external join proposal (not yet handled)");
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::error!("Failed to process message: {}", e);
+                        }
+                    }
+                }
+            }
+            AppEvent::KeyPackageReceived { event } => {
+                // We don't need to store key packages - we fetch them when needed
+                log::debug!(
+                    "Received key package from {} via subscription",
+                    event.pubkey.to_bech32().unwrap_or_default()
+                );
             }
             _ => {}
         }
@@ -269,56 +435,6 @@ impl App {
                     .await?;
             }
 
-            (
-                Page::GroupList {
-                    selected_index: _,
-                    groups: _,
-                    ..
-                },
-                KeyCode::Up,
-            ) => {
-                if let Page::GroupList { selected_index, .. } = &mut self.current_page {
-                    if *selected_index > 0 {
-                        *selected_index -= 1;
-                        let _ = self.state_tx.send(self.current_page.clone());
-                    }
-                }
-            }
-            (
-                Page::GroupList {
-                    selected_index: _,
-                    groups,
-                    ..
-                },
-                KeyCode::Down,
-            ) => {
-                let groups_len = groups.len();
-                if let Page::GroupList { selected_index, .. } = &mut self.current_page {
-                    if *selected_index + 1 < groups_len {
-                        *selected_index += 1;
-                        let _ = self.state_tx.send(self.current_page.clone());
-                    }
-                }
-            }
-            (
-                Page::GroupList {
-                    selected_index,
-                    groups,
-                    ..
-                },
-                KeyCode::Enter,
-            ) => {
-                if let Some(group) = groups.get(*selected_index) {
-                    let group_id = group.id.clone();
-                    self.navigate_to(PageType::Chat(group_id)).await?;
-                }
-            }
-            (Page::GroupList { .. }, KeyCode::Char('n'))
-                if key_modifiers.contains(KeyModifiers::CONTROL) =>
-            {
-                self.navigate_to(PageType::CreateGroup).await?;
-            }
-
             (Page::Chat { input: _, .. }, KeyCode::Char(c)) => {
                 if let Page::Chat { input, .. } = &mut self.current_page {
                     input.push(c);
@@ -334,13 +450,13 @@ impl App {
             (Page::Chat { input, .. }, KeyCode::Enter) => {
                 if !input.is_empty() {
                     let input_content = input.clone();
-                    
+
                     // Clear input immediately
                     if let Page::Chat { input, .. } = &mut self.current_page {
                         input.clear();
                         let _ = self.state_tx.send(self.current_page.clone());
                     }
-                    
+
                     // Check if it's a command
                     if input_content.starts_with("/") {
                         self.process_command(input_content).await?;
@@ -382,70 +498,18 @@ impl App {
                 }
             }
 
-            (Page::CreateGroup { name_input, .. }, KeyCode::Char(c)) => {
-                if let Page::CreateGroup { name_input, .. } = &mut self.current_page {
-                    name_input.push(c);
-                    let _ = self.state_tx.send(self.current_page.clone());
-                }
-            }
-            (Page::CreateGroup { name_input, .. }, KeyCode::Backspace) => {
-                if let Page::CreateGroup { name_input, .. } = &mut self.current_page {
-                    name_input.pop();
-                    let _ = self.state_tx.send(self.current_page.clone());
-                }
-            }
-            (Page::CreateGroup { name_input, .. }, KeyCode::Enter) => {
-                log::info!("CreateGroup Enter handler called, name_input: '{}'", name_input);
-                if !name_input.is_empty() {
-                    let group_name = name_input.clone();
-                    log::info!("Creating group with name: '{}'", group_name);
-                    
-                    // Actually create the group in storage
-                    use nrc_mls::groups::NostrGroupConfigData;
-                    
-                    use nostr_sdk::RelayUrl;
-                    
-                    // Use default relay for testing
-                    let relay_urls = vec![RelayUrl::parse("wss://relay.damus.io").unwrap()];
-                    
-                    let config = NostrGroupConfigData::new(
-                        group_name.clone(),
-                        "NRC Chat Group".to_string(),
-                        None,
-                        None,
-                        None,
-                        relay_urls.clone(),
-                        vec![self.keys.public_key()],
-                    );
-                    
-                    // For testing: Since OpenMLS doesn't support solo groups,
-                    // we need at least one other member. For now, just mock it.
-                    // TODO: In a real two-user test, we'd fetch Bob's key package and include it
-                    log::warn!("Group creation requires at least one other member (OpenMLS limitation)");
-                    log::warn!("For proper two-user testing, need to fetch other user's key package");
-                    
-                    self.flash = Some((
-                        format!("Created group: {} (mocked)", group_name),
-                        std::time::Instant::now() + std::time::Duration::from_secs(3)
-                    ));
-                    
-                    // Navigate back to GroupList for now
-                    self.navigate_to(PageType::GroupList).await?;
-                }
-            }
-
             (_, KeyCode::Esc) => {
                 if self.can_navigate_back() {
                     self.navigate_back().await?;
-                } else if !matches!(self.current_page, Page::GroupList { .. }) {
-                    self.navigate_to(PageType::GroupList).await?;
+                } else {
+                    self.navigate_to(PageType::Chat(None)).await?;
                 }
             }
             (_, KeyCode::F(1)) => {
                 self.navigate_to(PageType::Help).await?;
             }
             (_, KeyCode::Char('s')) if key_modifiers.contains(KeyModifiers::CONTROL) => {
-                self.navigate_to(PageType::Settings).await?;
+                // Settings page removed
             }
             _ => {}
         }
@@ -519,23 +583,18 @@ impl App {
                                 // Password is correct, update keys
                                 self.keys = loaded_keys;
                                 self.navigate_to(PageType::Initializing).await?;
-                                
-                                // Initialize MLS by creating key packages (required before creating groups)
-                                use nostr_sdk::RelayUrl;
-                                let relay_urls = vec![RelayUrl::parse("wss://relay.damus.io").unwrap()];
-                                match self.storage.create_key_package_for_event(&self.keys.public_key(), relay_urls) {
-                                    Ok(_) => log::info!("MLS key package created successfully"),
-                                    Err(e) => log::error!("Failed to create MLS key package: {}", e),
-                                }
-                                
-                                tokio::time::sleep(Duration::from_secs(2)).await;
-                                self.navigate_to(PageType::GroupList).await?;
+
+                                // Initialize MLS and publish key package
+                                self.publish_key_package().await?;
+
+                                self.navigate_to(PageType::Chat(None)).await?;
                             }
                             Err(_) => {
                                 // Wrong password
                                 let mut new_page = self.current_page.clone();
                                 if let Page::Onboarding { error, input, .. } = &mut new_page {
-                                    *error = Some("Invalid password. Please try again.".to_string());
+                                    *error =
+                                        Some("Invalid password. Please try again.".to_string());
                                     input.clear();
                                 }
                                 self.current_page = new_page.clone();
@@ -545,17 +604,11 @@ impl App {
                     } else {
                         // CreatePassword mode - save and initialize MLS
                         self.navigate_to(PageType::Initializing).await?;
-                        
-                        // Initialize MLS by creating key packages (required before creating groups)
-                        use nostr_sdk::RelayUrl;
-                        let relay_urls = vec![RelayUrl::parse("wss://relay.damus.io").unwrap()];
-                        match self.storage.create_key_package_for_event(&self.keys.public_key(), relay_urls) {
-                            Ok(_) => log::info!("MLS key package created successfully"),
-                            Err(e) => log::error!("Failed to create MLS key package: {}", e),
-                        }
-                        
-                        tokio::time::sleep(Duration::from_secs(2)).await;
-                        self.navigate_to(PageType::GroupList).await?;
+
+                        // Initialize MLS and publish key package
+                        self.publish_key_package().await?;
+
+                        self.navigate_to(PageType::Chat(None)).await?;
                     }
                 } else {
                     let mut new_page = self.current_page.clone();
@@ -670,29 +723,30 @@ impl App {
     }
 
     async fn process_command(&mut self, command: String) -> Result<()> {
+        log::info!("Processing command: {}", command);
         let parts: Vec<&str> = command.split_whitespace().collect();
         if parts.is_empty() {
             return Ok(());
         }
-        
+
         match parts[0] {
             "/npub" | "/n" => {
                 // Show our public key
                 let npub = self.keys.public_key().to_bech32()?;
                 self.flash = Some((
                     format!("Your npub: {}", npub),
-                    std::time::Instant::now() + std::time::Duration::from_secs(10)
+                    std::time::Instant::now() + std::time::Duration::from_secs(10),
                 ));
             }
             "/dm" | "/d" => {
                 if parts.len() < 2 {
                     self.flash = Some((
                         "Usage: /dm <npub>".to_string(),
-                        std::time::Instant::now() + std::time::Duration::from_secs(5)
+                        std::time::Instant::now() + std::time::Duration::from_secs(5),
                     ));
                     return Ok(());
                 }
-                
+
                 // Parse the npub
                 let npub_str = parts[1];
                 match PublicKey::from_bech32(npub_str) {
@@ -703,7 +757,7 @@ impl App {
                     Err(e) => {
                         self.flash = Some((
                             format!("Invalid npub: {}", e),
-                            std::time::Instant::now() + std::time::Duration::from_secs(5)
+                            std::time::Instant::now() + std::time::Duration::from_secs(5),
                         ));
                     }
                 }
@@ -711,17 +765,61 @@ impl App {
             _ => {
                 self.flash = Some((
                     format!("Unknown command: {}", parts[0]),
-                    std::time::Instant::now() + std::time::Duration::from_secs(5)
+                    std::time::Instant::now() + std::time::Duration::from_secs(5),
                 ));
             }
         }
-        
+
         Ok(())
     }
-    
+
+    async fn publish_key_package(&mut self) -> Result<()> {
+        let relays: Result<Vec<RelayUrl>, _> = get_default_relays()
+            .iter()
+            .map(|&url| RelayUrl::parse(url))
+            .collect();
+        let relays = relays?;
+        let (key_package_content, tags) = self
+            .storage
+            .create_key_package_for_event(&self.keys.public_key(), relays)?;
+
+        let event = EventBuilder::new(Kind::MlsKeyPackage, key_package_content)
+            .tags(tags)
+            .build(self.keys.public_key())
+            .sign(&self.keys)
+            .await?;
+
+        let send_result = self.client.send_event(&event).await?;
+        log::info!(
+            "Key package published with event ID: {} to {} relays",
+            event
+                .id
+                .to_bech32()
+                .unwrap_or_else(|_| "unknown".to_string()),
+            send_result.success.len()
+        );
+
+        if send_result.success.is_empty() {
+            log::error!("Failed to publish key package to any relays!");
+            log::error!("Failed relays: {:?}", send_result.failed);
+        }
+
+        // Also subscribe to GiftWrap events for welcomes
+        let filter = Filter::new()
+            .kind(Kind::GiftWrap)
+            .pubkey(self.keys.public_key());
+        self.client.subscribe(filter, None).await?;
+
+        log::info!("Key package published successfully");
+        Ok(())
+    }
+
     async fn create_dm_with(&mut self, other_pubkey: PublicKey) -> Result<()> {
-        log::info!("Creating DM with {}", other_pubkey.to_bech32()?);
-        
+        log::info!(
+            "=== Starting create_dm_with for {} ===",
+            other_pubkey.to_bech32()?
+        );
+
         // Check if we're already in a group with this person
         let already_in_group = match &self.current_page {
             Page::Chat { groups, .. } => {
@@ -738,45 +836,46 @@ impl App {
             let npub_str = other_pubkey.to_bech32()?;
             self.flash = Some((
                 format!("Already in a group with {}", npub_str),
-                std::time::Instant::now() + std::time::Duration::from_secs(5)
+                std::time::Instant::now() + std::time::Duration::from_secs(5),
             ));
             return Ok(());
         }
 
-        // Fetch their key package from relays (copied from network.rs)
+        // Fetch the key package from relays
         let filter = Filter::new()
-            .kind(Kind::from(443u16))
+            .kind(Kind::MlsKeyPackage)
             .author(other_pubkey)
             .limit(1);
 
-        // Subscribe to ensure we can fetch events
-        self.client.subscribe(filter.clone(), None).await?;
+        log::info!(
+            "Fetching key package for {} with filter: kind={:?}, author={}",
+            other_pubkey.to_bech32()?,
+            Kind::MlsKeyPackage,
+            other_pubkey.to_hex()
+        );
 
-        // Give time for event to propagate to relay and retry multiple times
-        let mut key_package_opt = None;
-        for attempt in 1..=10 {
-            tokio::time::sleep(Duration::from_millis(1500)).await;
+        // Ensure we're connected - just try to connect, it's idempotent
+        self.client.connect().await;
 
-            // Try to fetch from relay
-            let events = self
-                .client
-                .fetch_events(filter.clone(), Duration::from_secs(5))
-                .await?;
+        let events = self
+            .client
+            .fetch_events(filter.clone(), Duration::from_secs(10))
+            .await?;
 
-            if let Some(event) = events.into_iter().next() {
-                log::debug!("Found key package on attempt {attempt}");
-                key_package_opt = Some(event);
-                break;
+        log::info!("Fetch returned {} events", events.len());
+
+        let key_package = match events.into_iter().next() {
+            Some(kp) => {
+                log::info!("Found key package for {}", other_pubkey.to_bech32()?);
+                kp
             }
-            log::debug!("Key package not found on attempt {attempt}");
-        }
-
-        let key_package = match key_package_opt {
-            Some(kp) => kp,
             None => {
                 self.flash = Some((
-                    format!("No key package found for {}", other_pubkey.to_bech32()?),
-                    std::time::Instant::now() + std::time::Duration::from_secs(5)
+                    format!(
+                        "No key package found for {} (have they completed onboarding?)",
+                        other_pubkey.to_bech32()?
+                    ),
+                    std::time::Instant::now() + std::time::Duration::from_secs(5),
                 ));
                 log::error!("No key package found for {}", other_pubkey.to_bech32()?);
                 return Ok(());
@@ -784,36 +883,48 @@ impl App {
         };
 
         // Create group with them (copied from groups.rs create_group_with_member logic)
+        // Get relay URLs from default relays
+        let relay_urls: Result<Vec<RelayUrl>, _> = get_default_relays()
+            .iter()
+            .map(|&url| RelayUrl::parse(url))
+            .collect();
+        let relay_urls = relay_urls?;
+
         let config = NostrGroupConfigData::new(
             format!("DM with {}", other_pubkey.to_bech32()?),
             "Direct message".to_string(),
             None,
             None,
             None,
-            vec![],
-            vec![self.keys.public_key()],
+            relay_urls,
+            vec![self.keys.public_key(), other_pubkey],
         );
-        
-        match self.storage.create_group(
-            &self.keys.public_key(),
-            vec![key_package.clone()],
-            config,
-        ) {
+
+        match self
+            .storage
+            .create_group(&self.keys.public_key(), vec![key_package.clone()], config)
+        {
             Ok(group_result) => {
                 let group_id = GroupId::from_slice(group_result.group.mls_group_id.as_slice());
-                
+
                 // Subscribe to messages for this group
                 let h_tag_value = hex::encode(group_result.group.nostr_group_id);
                 let filter = Filter::new()
-                    .kind(Kind::from(445u16))
+                    .kind(Kind::MlsGroupMessage)
                     .custom_tag(SingleLetterTag::lowercase(Alphabet::H), h_tag_value)
                     .limit(100);
                 self.client.subscribe(filter, None).await?;
-                
+
                 // Send them the welcome
                 if let Some(welcome_rumor) = group_result.welcome_rumors.first() {
                     log::info!("Sending welcome to {}", other_pubkey.to_bech32()?);
-                    let gift_wrapped = EventBuilder::gift_wrap(&self.keys, &other_pubkey, welcome_rumor.clone(), None).await?;
+                    let gift_wrapped = EventBuilder::gift_wrap(
+                        &self.keys,
+                        &other_pubkey,
+                        welcome_rumor.clone(),
+                        None,
+                    )
+                    .await?;
                     if let Err(e) = self.client.send_event(&gift_wrapped).await {
                         log::error!("Failed to send welcome: {e}");
                     }
@@ -822,24 +933,24 @@ impl App {
                 // Update UI to show new group
                 self.flash = Some((
                     format!("Created DM with {}", other_pubkey.to_bech32()?),
-                    std::time::Instant::now() + std::time::Duration::from_secs(5)
+                    std::time::Instant::now() + std::time::Duration::from_secs(5),
                 ));
-                
+
                 // Navigate to the chat
-                self.navigate_to(PageType::Chat(group_id)).await?;
+                self.navigate_to(PageType::Chat(Some(group_id))).await?;
             }
             Err(e) => {
                 self.flash = Some((
                     format!("Failed to create group: {}", e),
-                    std::time::Instant::now() + std::time::Duration::from_secs(5)
+                    std::time::Instant::now() + std::time::Duration::from_secs(5),
                 ));
                 log::error!("Failed to create group: {}", e);
             }
         }
-        
+
         Ok(())
     }
-    
+
     pub async fn load_older_messages(&mut self, limit: usize) -> Result<()> {
         if let Page::Chat {
             group_id,
