@@ -1,5 +1,6 @@
 use anyhow::Result;
 use nostr_sdk::prelude::*;
+use nrc_mls::groups::NostrGroupConfigData;
 use nrc_mls::NostrMls;
 use nrc_mls_sqlite_storage::NostrMlsSqliteStorage;
 use openmls::group::GroupId;
@@ -333,7 +334,20 @@ impl App {
             (Page::Chat { input, .. }, KeyCode::Enter) => {
                 if !input.is_empty() {
                     let input_content = input.clone();
-                    self.send_event(AppEvent::SendMessage(input_content))?;
+                    
+                    // Clear input immediately
+                    if let Page::Chat { input, .. } = &mut self.current_page {
+                        input.clear();
+                        let _ = self.state_tx.send(self.current_page.clone());
+                    }
+                    
+                    // Check if it's a command
+                    if input_content.starts_with("/") {
+                        self.process_command(input_content).await?;
+                    } else {
+                        // Regular message
+                        self.send_event(AppEvent::SendMessage(input_content))?;
+                    }
                 }
             }
             (
@@ -400,18 +414,22 @@ impl App {
                         None,
                         None,
                         None,
-                        relay_urls,
+                        relay_urls.clone(),
                         vec![self.keys.public_key()],
                     );
                     
-                    // For now, simplify the test by just navigating back to GroupList
-                    // TODO: Fix the MLS group creation issue - storage.create_group fails with 
-                    // "An empty list of KeyPackages was provided" even though we initialized MLS
-                    log::warn!("Skipping actual group creation for now, navigating to GroupList");
+                    // For testing: Since OpenMLS doesn't support solo groups,
+                    // we need at least one other member. For now, just mock it.
+                    // TODO: In a real two-user test, we'd fetch Bob's key package and include it
+                    log::warn!("Group creation requires at least one other member (OpenMLS limitation)");
+                    log::warn!("For proper two-user testing, need to fetch other user's key package");
+                    
                     self.flash = Some((
-                        format!("Would create group: {}", group_name),
+                        format!("Created group: {} (mocked)", group_name),
                         std::time::Instant::now() + std::time::Duration::from_secs(3)
                     ));
+                    
+                    // Navigate back to GroupList for now
                     self.navigate_to(PageType::GroupList).await?;
                 }
             }
@@ -651,6 +669,177 @@ impl App {
         })
     }
 
+    async fn process_command(&mut self, command: String) -> Result<()> {
+        let parts: Vec<&str> = command.split_whitespace().collect();
+        if parts.is_empty() {
+            return Ok(());
+        }
+        
+        match parts[0] {
+            "/npub" | "/n" => {
+                // Show our public key
+                let npub = self.keys.public_key().to_bech32()?;
+                self.flash = Some((
+                    format!("Your npub: {}", npub),
+                    std::time::Instant::now() + std::time::Duration::from_secs(10)
+                ));
+            }
+            "/dm" | "/d" => {
+                if parts.len() < 2 {
+                    self.flash = Some((
+                        "Usage: /dm <npub>".to_string(),
+                        std::time::Instant::now() + std::time::Duration::from_secs(5)
+                    ));
+                    return Ok(());
+                }
+                
+                // Parse the npub
+                let npub_str = parts[1];
+                match PublicKey::from_bech32(npub_str) {
+                    Ok(pubkey) => {
+                        // Fetch their key package and create group
+                        self.create_dm_with(pubkey).await?;
+                    }
+                    Err(e) => {
+                        self.flash = Some((
+                            format!("Invalid npub: {}", e),
+                            std::time::Instant::now() + std::time::Duration::from_secs(5)
+                        ));
+                    }
+                }
+            }
+            _ => {
+                self.flash = Some((
+                    format!("Unknown command: {}", parts[0]),
+                    std::time::Instant::now() + std::time::Duration::from_secs(5)
+                ));
+            }
+        }
+        
+        Ok(())
+    }
+    
+    async fn create_dm_with(&mut self, other_pubkey: PublicKey) -> Result<()> {
+        log::info!("Creating DM with {}", other_pubkey.to_bech32()?);
+        
+        // Check if we're already in a group with this person
+        let already_in_group = match &self.current_page {
+            Page::Chat { groups, .. } => {
+                groups.iter().any(|group_summary| {
+                    // TODO: check if other_pubkey is in this group
+                    // For now, just assume no duplicates
+                    false
+                })
+            }
+            _ => false,
+        };
+
+        if already_in_group {
+            let npub_str = other_pubkey.to_bech32()?;
+            self.flash = Some((
+                format!("Already in a group with {}", npub_str),
+                std::time::Instant::now() + std::time::Duration::from_secs(5)
+            ));
+            return Ok(());
+        }
+
+        // Fetch their key package from relays (copied from network.rs)
+        let filter = Filter::new()
+            .kind(Kind::from(443u16))
+            .author(other_pubkey)
+            .limit(1);
+
+        // Subscribe to ensure we can fetch events
+        self.client.subscribe(filter.clone(), None).await?;
+
+        // Give time for event to propagate to relay and retry multiple times
+        let mut key_package_opt = None;
+        for attempt in 1..=10 {
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+
+            // Try to fetch from relay
+            let events = self
+                .client
+                .fetch_events(filter.clone(), Duration::from_secs(5))
+                .await?;
+
+            if let Some(event) = events.into_iter().next() {
+                log::debug!("Found key package on attempt {attempt}");
+                key_package_opt = Some(event);
+                break;
+            }
+            log::debug!("Key package not found on attempt {attempt}");
+        }
+
+        let key_package = match key_package_opt {
+            Some(kp) => kp,
+            None => {
+                self.flash = Some((
+                    format!("No key package found for {}", other_pubkey.to_bech32()?),
+                    std::time::Instant::now() + std::time::Duration::from_secs(5)
+                ));
+                log::error!("No key package found for {}", other_pubkey.to_bech32()?);
+                return Ok(());
+            }
+        };
+
+        // Create group with them (copied from groups.rs create_group_with_member logic)
+        let config = NostrGroupConfigData::new(
+            format!("DM with {}", other_pubkey.to_bech32()?),
+            "Direct message".to_string(),
+            None,
+            None,
+            None,
+            vec![],
+            vec![self.keys.public_key()],
+        );
+        
+        match self.storage.create_group(
+            &self.keys.public_key(),
+            vec![key_package.clone()],
+            config,
+        ) {
+            Ok(group_result) => {
+                let group_id = GroupId::from_slice(group_result.group.mls_group_id.as_slice());
+                
+                // Subscribe to messages for this group
+                let h_tag_value = hex::encode(group_result.group.nostr_group_id);
+                let filter = Filter::new()
+                    .kind(Kind::from(445u16))
+                    .custom_tag(SingleLetterTag::lowercase(Alphabet::H), h_tag_value)
+                    .limit(100);
+                self.client.subscribe(filter, None).await?;
+                
+                // Send them the welcome
+                if let Some(welcome_rumor) = group_result.welcome_rumors.first() {
+                    log::info!("Sending welcome to {}", other_pubkey.to_bech32()?);
+                    let gift_wrapped = EventBuilder::gift_wrap(&self.keys, &other_pubkey, welcome_rumor.clone(), None).await?;
+                    if let Err(e) = self.client.send_event(&gift_wrapped).await {
+                        log::error!("Failed to send welcome: {e}");
+                    }
+                }
+
+                // Update UI to show new group
+                self.flash = Some((
+                    format!("Created DM with {}", other_pubkey.to_bech32()?),
+                    std::time::Instant::now() + std::time::Duration::from_secs(5)
+                ));
+                
+                // Navigate to the chat
+                self.navigate_to(PageType::Chat(group_id)).await?;
+            }
+            Err(e) => {
+                self.flash = Some((
+                    format!("Failed to create group: {}", e),
+                    std::time::Instant::now() + std::time::Duration::from_secs(5)
+                ));
+                log::error!("Failed to create group: {}", e);
+            }
+        }
+        
+        Ok(())
+    }
+    
     pub async fn load_older_messages(&mut self, limit: usize) -> Result<()> {
         if let Page::Chat {
             group_id,
