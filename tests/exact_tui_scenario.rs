@@ -54,6 +54,9 @@ async fn exact_tui_scenario_test() -> Result<()> {
 
         // Trigger the same background fetch that timer would trigger
         let _ = top_client.trigger_fetch_welcomes().await;
+        
+        // Process the events that were generated (including RawWelcomesReceived)
+        let _ = top_client.process_pending_events().await;
 
         // Check if we found anything
         let groups = top_client.group_count().await;
