@@ -416,6 +416,16 @@ impl App {
                     let _ = self.state_tx.send(new_page);
                 }
             },
+            OnboardingMode::GenerateNew => {
+                // Immediately transition to EnterDisplayName
+                let new_page = Page::Onboarding {
+                    input: String::new(),
+                    mode: OnboardingMode::EnterDisplayName,
+                    error: None,
+                };
+                self.current_page = new_page.clone();
+                let _ = self.state_tx.send(new_page);
+            }
             OnboardingMode::EnterDisplayName => {
                 if !input.trim().is_empty() {
                     let new_page = Page::Onboarding {
