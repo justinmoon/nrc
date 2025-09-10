@@ -10,7 +10,10 @@ A terminal-based chat client using the Nostr protocol with MLS encryption for se
 ## Quick Start
 
 ```bash
-# Build and run with temporary data directory
+# Install from crates.io
+cargo install nrc
+
+# Or build and run with temporary data directory
 just run tmp
 
 # Or run directly
