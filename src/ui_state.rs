@@ -30,6 +30,11 @@ pub enum Page {
     Help {
         selected_section: usize,
     },
+
+    OpsDashboard {
+        items: Vec<OpsItem>,
+        selected: usize,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -112,6 +117,7 @@ pub enum PageType {
     Initializing,
     Chat(Option<GroupId>),
     Help,
+    OpsDashboard,
 }
 
 impl Page {
@@ -121,6 +127,16 @@ impl Page {
             Page::Initializing { .. } => PageType::Initializing,
             Page::Chat { group_id, .. } => PageType::Chat(Some(group_id.clone())),
             Page::Help { .. } => PageType::Help,
+            Page::OpsDashboard { .. } => PageType::OpsDashboard,
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct OpsItem {
+    pub id: String,
+    pub kind: String,
+    pub status: String,
+    pub updated_at: i64,
+    pub last_error: Option<String>,
 }

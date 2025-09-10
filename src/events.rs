@@ -64,6 +64,14 @@ pub enum AppEvent {
     KeyPackageReceived {
         event: Event,
     },
+    // Orchestrator -> UI: requests a storage operation for an in-flight op
+    OpNeedsStorageCreateGroup {
+        op_id: String,
+        other_pubkey: PublicKey,
+        key_package: Event,
+        // Suggested display name for the group
+        group_name: String,
+    },
 }
 
 #[derive(Debug, Clone)]
