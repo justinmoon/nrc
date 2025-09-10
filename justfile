@@ -27,20 +27,57 @@ act-ci fresh='':
         ./scripts/act-ci.sh
     fi
 
-# Run a client with a fresh temporary directory
-run client-name *args='':
+# Run a client (default: reuse last tmpdir, --fresh for new tmpdir)
+run *args='':
     #!/bin/bash
     set -e
-    if [[ "{{client-name}}" == "tmp" ]]; then
-        tmpdir=$(mktemp -d)
-        echo "Setting up temporary client at ${tmpdir} (95% confidence)"
+    
+    # Store last tmpdir path in a marker file
+    marker_file="/tmp/.nrc-last-tmpdir"
+    
+    # Check for --fresh flag
+    fresh=false
+    client_name=""
+    remaining_args=""
+    
+    # Parse arguments
+    for arg in {{args}}; do
+        if [[ "$arg" == "--fresh" ]]; then
+            fresh=true
+        elif [[ -z "$client_name" && "$arg" != -* ]]; then
+            client_name="$arg"
+        else
+            remaining_args="$remaining_args $arg"
+        fi
+    done
+    
+    # Determine tmpdir based on options
+    if [[ -n "$client_name" ]]; then
+        # Named client: use specific directory
+        tmpdir="/tmp/nrc-${client_name}"
+        if [[ "$fresh" == "true" ]] || [[ ! -d "$tmpdir" ]]; then
+            rm -rf "${tmpdir}" 2>/dev/null || true
+            tmpdir=$(mktemp -d -t "nrc-${client_name}-XXXXXX")
+            echo "Created fresh directory for client '${client_name}' at ${tmpdir} (95% confidence)"
+        else
+            echo "Reusing existing directory for client '${client_name}' at ${tmpdir} (95% confidence)"
+        fi
     else
-        tmpdir="/tmp/{{client-name}}"
-        echo "Setting up client '{{client-name}}' at ${tmpdir} (95% confidence)"
-        rm -rf "${tmpdir}" 2>/dev/null || true
-        mkdir -p "${tmpdir}"
+        # Default/tmp client
+        if [[ "$fresh" == "true" ]]; then
+            tmpdir=$(mktemp -d -t "nrc-tmp-XXXXXX")
+            echo "${tmpdir}" > "${marker_file}"
+            echo "Created fresh temporary directory at ${tmpdir} (95% confidence)"
+        elif [[ -f "${marker_file}" ]] && tmpdir=$(cat "${marker_file}") && [[ -d "${tmpdir}" ]]; then
+            echo "Reusing existing temporary directory at ${tmpdir} (95% confidence)"
+        else
+            tmpdir=$(mktemp -d -t "nrc-tmp-XXXXXX")
+            echo "${tmpdir}" > "${marker_file}"
+            echo "Created new temporary directory at ${tmpdir} (95% confidence)"
+        fi
     fi
-    cargo run -- --datadir "${tmpdir}" {{args}}
+    
+    cargo run -- --datadir "${tmpdir}" ${remaining_args}
 
 # Default recipe (show available commands)
 default:
