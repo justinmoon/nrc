@@ -251,6 +251,19 @@ impl App {
             AppEvent::ClearFlash => {
                 self.flash = None;
             }
+            AppEvent::Resize => {
+                // Just trigger a re-render by sending current state
+                let _ = self.state_tx.send(self.current_page.clone());
+            }
+            AppEvent::Paste(text) => {
+                // Add pasted text to current input field
+                if let Page::Onboarding { input, .. } | Page::Chat { input, .. } =
+                    &mut self.current_page
+                {
+                    input.push_str(&text);
+                    let _ = self.state_tx.send(self.current_page.clone());
+                }
+            }
             AppEvent::RefreshCurrentPage => {
                 let page_type = self.current_page.page_type();
                 let refreshed = self.load_page_data(page_type).await?;
@@ -544,9 +557,10 @@ impl App {
         match mode {
             OnboardingMode::Choose => match input.as_str() {
                 "1" => {
+                    // Skip GenerateNew and go straight to EnterDisplayName
                     let new_page = Page::Onboarding {
                         input: String::new(),
-                        mode: OnboardingMode::GenerateNew,
+                        mode: OnboardingMode::EnterDisplayName,
                         error: None,
                     };
                     self.current_page = new_page.clone();
@@ -571,16 +585,6 @@ impl App {
                     let _ = self.state_tx.send(new_page);
                 }
             },
-            OnboardingMode::GenerateNew => {
-                // Immediately transition to EnterDisplayName
-                let new_page = Page::Onboarding {
-                    input: String::new(),
-                    mode: OnboardingMode::EnterDisplayName,
-                    error: None,
-                };
-                self.current_page = new_page.clone();
-                let _ = self.state_tx.send(new_page);
-            }
             OnboardingMode::EnterDisplayName => {
                 if !input.trim().is_empty() {
                     let new_page = Page::Onboarding {

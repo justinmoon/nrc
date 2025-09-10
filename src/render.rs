@@ -72,7 +72,6 @@ fn render_onboarding(f: &mut Frame, input: &str, mode: &OnboardingMode, error: &
             Line::from(""),
             Line::from(format!("Your choice: {input}")),
         ]),
-        OnboardingMode::GenerateNew => Text::from("Generating new keys..."),
         OnboardingMode::EnterDisplayName => Text::from(vec![
             Line::from("Enter your display name:"),
             Line::from(""),

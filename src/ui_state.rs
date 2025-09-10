@@ -79,7 +79,6 @@ pub enum SettingField {
 #[derive(Clone, Debug, PartialEq)]
 pub enum OnboardingMode {
     Choose,
-    GenerateNew,
     EnterDisplayName,
     CreatePassword,
     ImportExisting,

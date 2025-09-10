@@ -12,6 +12,7 @@ pub enum AppEvent {
 
     KeyPress(KeyEvent),
     Paste(String),
+    Resize,
     SendMessage(String),
     CreateGroup {
         name: String,

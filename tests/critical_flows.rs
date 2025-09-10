@@ -266,45 +266,16 @@ async fn test_new_user_complete_journey() -> Result<()> {
     app.send_key('1').await?;
     app.send_enter().await?;
 
-    // Should transition through GenerateNew briefly, then to EnterDisplayName
-    // The GenerateNew mode is just a transitional state
+    // Should go directly to EnterDisplayName
     match &app.app.current_page {
         Page::Onboarding {
-            mode: OnboardingMode::GenerateNew,
-            ..
-        }
-        | Page::Onboarding {
             mode: OnboardingMode::EnterDisplayName,
             ..
         } => {}
         _ => panic!(
-            "Expected GenerateNew or EnterDisplayName mode, got {:?}",
+            "Expected EnterDisplayName mode, got {:?}",
             app.app.current_page
         ),
-    }
-
-    // If we're still in GenerateNew, need to press Enter or wait
-    if matches!(
-        &app.app.current_page,
-        Page::Onboarding {
-            mode: OnboardingMode::GenerateNew,
-            ..
-        }
-    ) {
-        // GenerateNew is a transitional state, press Enter to continue
-        app.send_enter().await?;
-
-        // Now should be in EnterDisplayName
-        match &app.app.current_page {
-            Page::Onboarding {
-                mode: OnboardingMode::EnterDisplayName,
-                ..
-            } => {}
-            _ => panic!(
-                "Expected EnterDisplayName after GenerateNew, got {:?}",
-                app.app.current_page
-            ),
-        }
     }
 
     // Enter display name
@@ -461,7 +432,7 @@ async fn test_two_users_messaging() -> Result<()> {
     // Alice completes onboarding
     alice.send_key('1').await?; // Generate new
     alice.send_enter().await?;
-    alice.send_enter().await?; // Transition through GenerateNew
+    alice.send_enter().await?; // Go to EnterDisplayName
     alice.send_keys("Alice").await?;
     alice.send_enter().await?;
     alice.send_keys("alicepass123").await?;
@@ -473,7 +444,7 @@ async fn test_two_users_messaging() -> Result<()> {
     // Bob completes onboarding
     bob.send_key('1').await?; // Generate new
     bob.send_enter().await?;
-    bob.send_enter().await?; // Transition through GenerateNew
+    bob.send_enter().await?; // Go to EnterDisplayName
     bob.send_keys("Bob").await?;
     bob.send_enter().await?;
     bob.send_keys("bobpass123").await?;
