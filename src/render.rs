@@ -1,5 +1,5 @@
 use nrc::app::App;
-use nrc::ui_state::{GroupSummary, Message, Modal, OnboardingMode, Page};
+use nrc::ui_state::{GroupSummary, Message, Modal, OnboardingMode, OpsItem, Page};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
@@ -31,6 +31,7 @@ pub fn render(f: &mut Frame, app: &App) {
             &app.flash,
         ),
         Page::Help { selected_section } => render_help(f, *selected_section),
+        Page::OpsDashboard { items, selected } => render_ops_dashboard(f, items, *selected),
     }
 
     if let Some(modal) = &app.modal {
@@ -269,6 +270,45 @@ fn render_help(f: &mut Frame, _selected_section: usize) {
     let paragraph =
         Paragraph::new(text).block(Block::default().borders(Borders::ALL).title("Help"));
     f.render_widget(paragraph, size);
+}
+
+fn render_ops_dashboard(f: &mut Frame, items: &[OpsItem], selected: usize) {
+    use ratatui::widgets::{Row, Table};
+
+    let size = f.area();
+    let header = ["ID", "Kind", "Status", "Updated", "Error"];
+    let rows = items.iter().enumerate().map(|(i, it)| {
+        let mut id = it.id.clone();
+        if id.len() > 8 {
+            id = format!("{}…", &id[..8]);
+        }
+        let updated = chrono::DateTime::<chrono::Utc>::from_timestamp(it.updated_at, 0)
+            .map(|dt| dt.format("%H:%M:%S").to_string())
+            .unwrap_or_else(|| it.updated_at.to_string());
+        let err = it
+            .last_error
+            .as_ref()
+            .map(|e| {
+                if e.len() > 20 {
+                    format!("{}…", &e[..20])
+                } else {
+                    e.clone()
+                }
+            })
+            .unwrap_or_default();
+        let style = if i == selected {
+            Style::default().bg(Color::Blue).fg(Color::White)
+        } else {
+            Style::default()
+        };
+        Row::new(vec![id, it.kind.clone(), it.status.clone(), updated, err]).style(style)
+    });
+
+    let table = Table::new(rows, [20, 18, 12, 10, 30])
+        .header(Row::new(header).style(Style::default().fg(Color::Yellow)))
+        .block(Block::default().borders(Borders::ALL).title("Operations"));
+
+    f.render_widget(table, size);
 }
 
 fn render_modal(f: &mut Frame, modal: &Modal) {

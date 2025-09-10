@@ -47,6 +47,9 @@ struct Args {
     /// Data directory for logs and other files
     #[arg(long, value_parser, default_value_os_t = default_data_dir())]
     datadir: PathBuf,
+    /// Watch operations dashboard mode
+    #[arg(long, default_value_t = false)]
+    watch_ops: bool,
 }
 
 fn setup_logging(datadir: &PathBuf) -> Result<()> {
@@ -100,7 +103,7 @@ async fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let res = run_app(&mut terminal, &args.datadir).await;
+    let res = run_app(&mut terminal, &args.datadir, args.watch_ops).await;
 
     disable_raw_mode()?;
     execute!(
@@ -120,6 +123,7 @@ async fn main() -> Result<()> {
 async fn run_app<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     datadir: &Path,
+    watch_ops: bool,
 ) -> Result<()> {
     use nostr_sdk::prelude::*;
     use nrc::config::get_default_relays;
@@ -128,7 +132,16 @@ async fn run_app<B: ratatui::backend::Backend>(
 
     let key_storage = nrc::key_storage::KeyStorage::new(datadir);
 
-    let (keys, initial_page) = if key_storage.keys_exist() {
+    let (keys, initial_page) = if watch_ops {
+        let keys = Keys::generate();
+        (
+            keys,
+            Page::OpsDashboard {
+                items: vec![],
+                selected: 0,
+            },
+        )
+    } else if key_storage.keys_exist() {
         let keys = Keys::generate();
         (
             keys,
@@ -185,11 +198,18 @@ async fn run_app<B: ratatui::backend::Backend>(
     let ops_event_tx = event_tx.clone();
     tokio::spawn(async move {
         use tokio::time::{interval, Duration};
-        let mut pending_ops_interval = interval(Duration::from_secs(30));
+        let mut pending_ops_interval = if watch_ops {
+            interval(Duration::from_millis(500))
+        } else {
+            interval(Duration::from_secs(30))
+        };
 
         loop {
             pending_ops_interval.tick().await;
             let _ = ops_event_tx.send(AppEvent::ProcessPendingOperationsTick);
+            if watch_ops {
+                let _ = ops_event_tx.send(AppEvent::RefreshCurrentPage);
+            }
         }
     });
 

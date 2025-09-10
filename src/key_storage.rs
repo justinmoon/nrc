@@ -15,6 +15,10 @@ impl KeyStorage {
         }
     }
 
+    pub fn datadir(&self) -> &Path {
+        self.db_path.parent().unwrap_or_else(|| Path::new("."))
+    }
+
     /// Initialize the keys table if it doesn't exist
     fn init_table(&self, conn: &Connection) -> Result<()> {
         conn.execute(

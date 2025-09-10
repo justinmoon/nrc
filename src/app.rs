@@ -8,13 +8,14 @@ use nrc_mls_sqlite_storage::NostrMlsSqliteStorage;
 use openmls::group::GroupId;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tokio::sync::{mpsc, watch, Mutex};
 
 use crate::config::get_default_relays;
 use crate::events::{AppEvent, NetworkCommand};
 use crate::key_storage::KeyStorage;
-use crate::ui_state::{GroupSummary, Message, Modal, Page, PageType};
+use crate::ops::{spawn_orchestrator, CreateDmStep, OperationKind, OpsCommand, OpsStore};
+use crate::ui_state::{GroupSummary, Message, Modal, OpsItem, Page, PageType};
 
 pub struct App {
     pub current_page: Page,
@@ -38,6 +39,10 @@ pub struct App {
 
     pub profiles: Arc<Mutex<HashMap<PublicKey, Metadata>>>,
     pub welcome_rumors: Arc<Mutex<HashMap<PublicKey, UnsignedEvent>>>,
+
+    // Persistent operations orchestrator
+    pub ops_store: OpsStore,
+    pub ops_cmd_tx: mpsc::UnboundedSender<OpsCommand>,
 }
 
 impl App {
@@ -51,6 +56,7 @@ impl App {
         let (state_tx, state_rx) = watch::channel(initial_page.clone());
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let (command_tx, _command_rx) = mpsc::channel(100);
+        let (ops_cmd_tx, ops_cmd_rx) = mpsc::unbounded_channel();
 
         // Add relays and connect (like master branch does)
         for &relay in get_default_relays() {
@@ -67,6 +73,22 @@ impl App {
             client.clone(),
             event_tx.clone(),
             keys.public_key(),
+        );
+
+        // Ensure we are persistently subscribed to GiftWrap events for welcomes
+        let giftwrap_filter = Filter::new().kind(Kind::GiftWrap).pubkey(keys.public_key());
+        if let Err(e) = client.subscribe(giftwrap_filter, None).await {
+            log::warn!("Failed to subscribe to GiftWrap events: {e}");
+        }
+
+        // Initialize persistent ops store and background orchestrator
+        let ops_store = OpsStore::new(key_storage.datadir())?;
+        spawn_orchestrator(
+            ops_store.clone(),
+            client.clone(),
+            keys.clone(),
+            event_tx.clone(),
+            ops_cmd_rx,
         );
 
         Ok(Self {
@@ -86,6 +108,8 @@ impl App {
             command_tx,
             profiles: Arc::new(Mutex::new(HashMap::new())),
             welcome_rumors: Arc::new(Mutex::new(HashMap::new())),
+            ops_store,
+            ops_cmd_tx,
         })
     }
 
@@ -157,6 +181,34 @@ impl App {
             PageType::Help => Ok(Page::Help {
                 selected_section: 0,
             }),
+            PageType::OpsDashboard => {
+                let items = self
+                    .ops_store
+                    .list_all()?
+                    .into_iter()
+                    .map(|op| OpsItem {
+                        id: op.id,
+                        kind: match op.kind {
+                            crate::ops::OperationKind::SendMessage { .. } => {
+                                "SendMessage".to_string()
+                            }
+                            crate::ops::OperationKind::PublishKeyPackage { .. } => {
+                                "PublishKeyPackage".to_string()
+                            }
+                            crate::ops::OperationKind::CreateDm { .. } => "CreateDm".to_string(),
+                        },
+                        status: match op.status {
+                            crate::ops::OpStatus::Pending => "Pending".to_string(),
+                            crate::ops::OpStatus::InProgress => "InProgress".to_string(),
+                            crate::ops::OpStatus::Success => "Success".to_string(),
+                            crate::ops::OpStatus::Error => "Error".to_string(),
+                        },
+                        updated_at: op.updated_at,
+                        last_error: op.last_error,
+                    })
+                    .collect::<Vec<OpsItem>>();
+                Ok(Page::OpsDashboard { items, selected: 0 })
+            }
             PageType::Onboarding => Ok(Page::Onboarding {
                 input: String::new(),
                 mode: crate::ui_state::OnboardingMode::Choose,
@@ -203,27 +255,26 @@ impl App {
                 } = &mut self.current_page
                 {
                     if !content.is_empty() {
-                        // Create the MLS message (following mls_memory.rs pattern)
+                        // Create the MLS message locally (storage-bound) and enqueue send op
                         let rumor = EventBuilder::new(Kind::Custom(9), content.clone())
                             .build(self.keys.public_key());
 
                         match self.storage.create_message(group_id, rumor) {
                             Ok(message_event) => {
-                                // Publish the message to relays
-                                match self.client.send_event(&message_event).await {
-                                    Ok(_) => {
-                                        log::info!("Message sent successfully");
+                                // Add to local messages immediately for UI feedback
+                                messages.push(Message {
+                                    content: content.clone(),
+                                    sender: self.keys.public_key(),
+                                    timestamp: Timestamp::now(),
+                                });
 
-                                        // Add to local messages immediately for UI feedback
-                                        messages.push(Message {
-                                            content: content.clone(),
-                                            sender: self.keys.public_key(),
-                                            timestamp: Timestamp::now(),
-                                        });
-                                    }
-                                    Err(e) => {
-                                        log::error!("Failed to send message: {e}");
-                                    }
+                                // Enqueue a persistent send operation
+                                let kind = OperationKind::SendMessage {
+                                    event: message_event,
+                                };
+                                if let Ok(op_id) = self.ops_store.enqueue(kind) {
+                                    log::debug!("Enqueued SendMessage op {op_id}");
+                                    let _ = self.ops_cmd_tx.send(OpsCommand::Wake);
                                 }
                             }
                             Err(e) => {
@@ -422,6 +473,64 @@ impl App {
                     event.pubkey.to_bech32().unwrap_or_default()
                 );
             }
+            AppEvent::OpNeedsStorageCreateGroup {
+                op_id,
+                other_pubkey,
+                key_package,
+                group_name,
+            } => {
+                // Perform storage-bound group creation and update the op
+                let relay_urls: Result<Vec<RelayUrl>, _> = get_default_relays()
+                    .iter()
+                    .map(|&url| RelayUrl::parse(url))
+                    .collect();
+                let relay_urls = relay_urls?;
+
+                let config = NostrGroupConfigData::new(
+                    group_name.clone(),
+                    "Direct message".to_string(),
+                    None,
+                    None,
+                    None,
+                    relay_urls,
+                    vec![self.keys.public_key(), other_pubkey],
+                );
+
+                match self.storage.create_group(
+                    &self.keys.public_key(),
+                    vec![key_package.clone()],
+                    config,
+                ) {
+                    Ok(group_result) => {
+                        let nostr_group_id_hex = hex::encode(group_result.group.nostr_group_id);
+                        if let Some(welcome_rumor) = group_result.welcome_rumors.first() {
+                            // Update the operation to next step and wake orchestrator
+                            let mut op = self.ops_store.load(&op_id)?;
+                            op.kind = OperationKind::CreateDm {
+                                other_pubkey,
+                                step: CreateDmStep::SubscribeGroup {
+                                    nostr_group_id_hex,
+                                    welcome_rumor: welcome_rumor.clone(),
+                                    to: other_pubkey,
+                                },
+                            };
+                            op.status = crate::ops::OpStatus::InProgress;
+                            self.ops_store.save(&op)?;
+                            let _ = self.ops_cmd_tx.send(OpsCommand::Updated(op_id));
+
+                            // Navigate to chat for better UX
+                            let group_id =
+                                GroupId::from_slice(group_result.group.mls_group_id.as_slice());
+                            self.navigate_to(PageType::Chat(Some(group_id))).await?;
+                        } else {
+                            log::error!("No welcome rumor produced by storage.create_group");
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Failed to create group in storage: {e}");
+                    }
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -547,6 +656,10 @@ impl App {
             }
             (_, KeyCode::F(1)) => {
                 self.navigate_to(PageType::Help).await?;
+            }
+            // Optional: Ctrl+O to view ops dashboard
+            (_, KeyCode::Char('o')) if key_modifiers.contains(KeyModifiers::CONTROL) => {
+                self.navigate_to(PageType::OpsDashboard).await?;
             }
             (_, KeyCode::Char('s')) if key_modifiers.contains(KeyModifiers::CONTROL) => {
                 // Settings page removed
@@ -810,28 +923,11 @@ impl App {
             .sign(&self.keys)
             .await?;
 
-        let send_result = self.client.send_event(&event).await?;
-        log::info!(
-            "Key package published with event ID: {} to {} relays",
-            event
-                .id
-                .to_bech32()
-                .unwrap_or_else(|_| "unknown".to_string()),
-            send_result.success.len()
-        );
-
-        if send_result.success.is_empty() {
-            log::error!("Failed to publish key package to any relays!");
-            log::error!("Failed relays: {:?}", send_result.failed);
-        }
-
-        // Also subscribe to GiftWrap events for welcomes
-        let filter = Filter::new()
-            .kind(Kind::GiftWrap)
-            .pubkey(self.keys.public_key());
-        self.client.subscribe(filter, None).await?;
-
-        log::info!("Key package published successfully");
+        // Enqueue persistent publish operation (network in background)
+        let kind = OperationKind::PublishKeyPackage { event };
+        let op_id = self.ops_store.enqueue(kind)?;
+        log::info!("Enqueued key package publish op {op_id}");
+        let _ = self.ops_cmd_tx.send(OpsCommand::Wake);
         Ok(())
     }
 
@@ -862,110 +958,90 @@ impl App {
             return Ok(());
         }
 
-        // Fetch the key package from relays
+        // Fast-path: try to fetch key package quickly to create group immediately for UX/tests
         let filter = Filter::new()
             .kind(Kind::MlsKeyPackage)
             .author(other_pubkey)
             .limit(1);
-
-        log::info!(
-            "Fetching key package for {} with filter: kind={:?}, author={}",
-            other_pubkey.to_bech32()?,
-            Kind::MlsKeyPackage,
-            other_pubkey.to_hex()
-        );
-
-        // Ensure we're connected - just try to connect, it's idempotent
-        self.client.connect().await;
-
-        let events = self
-            .client
-            .fetch_events(filter.clone(), Duration::from_secs(10))
-            .await?;
-
-        log::info!("Fetch returned {} events", events.len());
-
-        let key_package = match events.into_iter().next() {
-            Some(kp) => {
-                log::info!("Found key package for {}", other_pubkey.to_bech32()?);
-                kp
-            }
-            None => {
-                self.flash = Some((
-                    format!(
-                        "No key package found for {} (have they completed onboarding?)",
-                        other_pubkey.to_bech32()?
-                    ),
-                    std::time::Instant::now() + std::time::Duration::from_secs(5),
-                ));
-                log::error!("No key package found for {}", other_pubkey.to_bech32()?);
-                return Ok(());
-            }
-        };
-
-        // Create group with them (copied from groups.rs create_group_with_member logic)
-        // Get relay URLs from default relays
-        let relay_urls: Result<Vec<RelayUrl>, _> = get_default_relays()
-            .iter()
-            .map(|&url| RelayUrl::parse(url))
-            .collect();
-        let relay_urls = relay_urls?;
-
-        let config = NostrGroupConfigData::new(
-            format!("DM with {}", other_pubkey.to_bech32()?),
-            "Direct message".to_string(),
-            None,
-            None,
-            None,
-            relay_urls,
-            vec![self.keys.public_key(), other_pubkey],
-        );
-
         match self
-            .storage
-            .create_group(&self.keys.public_key(), vec![key_package.clone()], config)
+            .client
+            .fetch_events(filter.clone(), std::time::Duration::from_secs(1))
+            .await
         {
-            Ok(group_result) => {
-                let group_id = GroupId::from_slice(group_result.group.mls_group_id.as_slice());
+            Ok(events) if !events.is_empty() => {
+                let key_package = events.into_iter().next().unwrap();
 
-                // Subscribe to messages for this group
-                let h_tag_value = hex::encode(group_result.group.nostr_group_id);
-                let filter = Filter::new()
-                    .kind(Kind::MlsGroupMessage)
-                    .custom_tag(SingleLetterTag::lowercase(Alphabet::H), h_tag_value)
-                    .limit(100);
-                self.client.subscribe(filter, None).await?;
+                // Create group locally
+                let relay_urls: Result<Vec<RelayUrl>, _> = get_default_relays()
+                    .iter()
+                    .map(|&url| RelayUrl::parse(url))
+                    .collect();
+                let relay_urls = relay_urls?;
+                let config = NostrGroupConfigData::new(
+                    format!("DM with {}", other_pubkey.to_bech32()?),
+                    "Direct message".to_string(),
+                    None,
+                    None,
+                    None,
+                    relay_urls,
+                    vec![self.keys.public_key(), other_pubkey],
+                );
+                match self.storage.create_group(
+                    &self.keys.public_key(),
+                    vec![key_package.clone()],
+                    config,
+                ) {
+                    Ok(group_result) => {
+                        let nostr_group_id_hex = hex::encode(group_result.group.nostr_group_id);
+                        if let Some(welcome_rumor) = group_result.welcome_rumors.first() {
+                            // Enqueue background steps (subscribe + send welcome)
+                            let kind = OperationKind::CreateDm {
+                                other_pubkey,
+                                step: CreateDmStep::SubscribeGroup {
+                                    nostr_group_id_hex,
+                                    welcome_rumor: welcome_rumor.clone(),
+                                    to: other_pubkey,
+                                },
+                            };
+                            let _ = self.ops_store.enqueue(kind).map(|id| {
+                                log::info!("Enqueued CreateDm continuation op {id}");
+                                let _ = self.ops_cmd_tx.send(OpsCommand::Wake);
+                            });
 
-                // Send them the welcome
-                if let Some(welcome_rumor) = group_result.welcome_rumors.first() {
-                    log::info!("Sending welcome to {}", other_pubkey.to_bech32()?);
-                    let gift_wrapped = EventBuilder::gift_wrap(
-                        &self.keys,
-                        &other_pubkey,
-                        welcome_rumor.clone(),
-                        None,
-                    )
-                    .await?;
-                    if let Err(e) = self.client.send_event(&gift_wrapped).await {
-                        log::error!("Failed to send welcome: {e}");
+                            // Subscribe locally to group messages for immediate UX
+                            let filter = Filter::new()
+                                .kind(Kind::MlsGroupMessage)
+                                .custom_tag(
+                                    SingleLetterTag::lowercase(Alphabet::H),
+                                    hex::encode(group_result.group.nostr_group_id),
+                                )
+                                .limit(100);
+                            if let Err(e) = self.client.subscribe(filter, None).await {
+                                log::warn!("Failed to subscribe to group messages: {e}");
+                            }
+
+                            // Navigate to chat
+                            let group_id =
+                                GroupId::from_slice(group_result.group.mls_group_id.as_slice());
+                            self.navigate_to(PageType::Chat(Some(group_id))).await?;
+                        } else {
+                            log::error!("No welcome rumor produced by storage.create_group");
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Failed to create group: {e}");
                     }
                 }
-
-                // Update UI to show new group
-                self.flash = Some((
-                    format!("Created DM with {}", other_pubkey.to_bech32()?),
-                    std::time::Instant::now() + std::time::Duration::from_secs(5),
-                ));
-
-                // Navigate to the chat
-                self.navigate_to(PageType::Chat(Some(group_id))).await?;
             }
-            Err(e) => {
-                self.flash = Some((
-                    format!("Failed to create group: {e}"),
-                    std::time::Instant::now() + std::time::Duration::from_secs(5),
-                ));
-                log::error!("Failed to create group: {e}");
+            _ => {
+                // Fallback: enqueue full background flow starting with key package fetch
+                let kind = OperationKind::CreateDm {
+                    other_pubkey,
+                    step: CreateDmStep::FetchKeyPackage,
+                };
+                let op_id = self.ops_store.enqueue(kind)?;
+                log::info!("Enqueued CreateDm op {op_id}");
+                let _ = self.ops_cmd_tx.send(OpsCommand::Wake);
             }
         }
 
