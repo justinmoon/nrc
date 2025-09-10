@@ -530,10 +530,18 @@ impl App {
             }
 
             (_, KeyCode::Esc) => {
-                if self.can_navigate_back() {
-                    self.navigate_back().await?;
-                } else {
-                    self.navigate_to(PageType::Chat(None)).await?;
+                // Don't allow escape during onboarding or initialization
+                match self.current_page {
+                    Page::Onboarding { .. } | Page::Initializing { .. } => {
+                        // Do nothing - escape is disabled during onboarding/initialization
+                    }
+                    _ => {
+                        // Only navigate back if there's actually somewhere to go back to
+                        if self.can_navigate_back() {
+                            self.navigate_back().await?;
+                        }
+                        // If no previous page, escape does nothing (we're at the main screen)
+                    }
                 }
             }
             (_, KeyCode::F(1)) => {
@@ -609,7 +617,9 @@ impl App {
                                 // Initialize MLS and publish key package
                                 self.publish_key_package().await?;
 
+                                // Navigate to chat and clear history - no going back from here
                                 self.navigate_to(PageType::Chat(None)).await?;
+                                self.previous_page = None; // Clear navigation history
                             }
                             Err(_) => {
                                 // Wrong password
@@ -624,13 +634,17 @@ impl App {
                             }
                         }
                     } else {
-                        // CreatePassword mode - save and initialize MLS
+                        // CreatePassword mode - save keys first
+                        self.key_storage.save_encrypted(&self.keys, &input)?;
+
                         self.navigate_to(PageType::Initializing).await?;
 
                         // Initialize MLS and publish key package
                         self.publish_key_package().await?;
 
+                        // Navigate to chat and clear history - no going back from here
                         self.navigate_to(PageType::Chat(None)).await?;
+                        self.previous_page = None; // Clear navigation history
                     }
                 } else {
                     let mut new_page = self.current_page.clone();
