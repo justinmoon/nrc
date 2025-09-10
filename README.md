@@ -5,7 +5,7 @@ A terminal-based chat client using the Nostr protocol with MLS encryption for se
 ## Prerequisites
 
 - Rust 1.70+ and Cargo
-- Terminal with TUI support
+- Any terminal that can run a TUI
 
 ## Quick Start
 
