@@ -195,7 +195,12 @@ async fn run_app<B: ratatui::backend::Backend>(
     let mut event_rx = event_rx;
 
     loop {
-        let should_render = if state_rx.has_changed().unwrap_or(false) {
+        let should_render = if last_rendered_state.is_none() {
+            // Force initial render
+            let state = state_rx.borrow_and_update().clone();
+            last_rendered_state = Some(state);
+            true
+        } else if state_rx.has_changed().unwrap_or(false) {
             let state = state_rx.borrow_and_update().clone();
             let changed = last_rendered_state.as_ref() != Some(&state);
             if changed {
