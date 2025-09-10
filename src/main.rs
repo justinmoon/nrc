@@ -152,14 +152,16 @@ async fn run_app<B: ratatui::backend::Backend>(
 
     let client = Client::builder().signer(keys.clone()).build();
 
-    for &relay in get_default_relays() {
-        if let Err(e) = client.add_relay(relay).await {
-            log::warn!("Failed to add relay {relay}: {e}");
+    // Add relays and connect in background for faster startup
+    let client_clone = client.clone();
+    tokio::spawn(async move {
+        for &relay in get_default_relays() {
+            if let Err(e) = client_clone.add_relay(relay).await {
+                log::warn!("Failed to add relay {relay}: {e}");
+            }
         }
-    }
-
-    client.connect().await;
-    tokio::time::sleep(Duration::from_secs(2)).await;
+        client_clone.connect().await;
+    });
 
     let db_path = datadir.join("nrc.db");
     #[allow(clippy::arc_with_non_send_sync)]
@@ -193,15 +195,24 @@ async fn run_app<B: ratatui::backend::Backend>(
 
     let mut last_rendered_state: Option<Page> = None;
     let mut event_rx = event_rx;
+    let mut force_render = false;
 
     loop {
-        let should_render = if state_rx.has_changed().unwrap_or(false) {
+        let should_render = if last_rendered_state.is_none() {
+            // Force initial render
+            let state = state_rx.borrow_and_update().clone();
+            last_rendered_state = Some(state);
+            true
+        } else if state_rx.has_changed().unwrap_or(false) {
             let state = state_rx.borrow_and_update().clone();
             let changed = last_rendered_state.as_ref() != Some(&state);
             if changed {
                 last_rendered_state = Some(state);
             }
             changed
+        } else if force_render {
+            force_render = false;
+            true
         } else {
             false
         };
@@ -218,6 +229,10 @@ async fn run_app<B: ratatui::backend::Backend>(
                     {
                         return Ok(());
                     }
+                    app.handle_event(event).await?;
+                }
+                AppEvent::Resize => {
+                    force_render = true;
                     app.handle_event(event).await?;
                 }
                 _ => {

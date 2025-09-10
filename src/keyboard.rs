@@ -16,6 +16,9 @@ pub fn spawn_keyboard_listener(tx: mpsc::UnboundedSender<AppEvent>) {
                     Ok(Event::Paste(text)) => {
                         let _ = tx.send(AppEvent::Paste(text));
                     }
+                    Ok(Event::Resize(_, _)) => {
+                        let _ = tx.send(AppEvent::Resize);
+                    }
                     _ => {}
                 }
             }
