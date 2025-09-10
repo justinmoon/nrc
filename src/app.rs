@@ -1,4 +1,5 @@
 use anyhow::Result;
+use clipboard::ClipboardProvider;
 use nostr_sdk::nips::nip59;
 use nostr_sdk::prelude::*;
 use nrc_mls::groups::NostrGroupConfigData;
@@ -718,12 +719,31 @@ impl App {
 
         match parts[0] {
             "/npub" | "/n" => {
-                // Show our public key
+                // Copy npub to clipboard
                 let npub = self.keys.public_key().to_bech32()?;
-                self.flash = Some((
-                    format!("Your npub: {npub}"),
-                    std::time::Instant::now() + std::time::Duration::from_secs(10),
-                ));
+
+                match clipboard::ClipboardContext::new() {
+                    Ok(mut ctx) => match ctx.set_contents(npub.clone()) {
+                        Ok(_) => {
+                            self.flash = Some((
+                                format!("Copied npub to clipboard: {npub}"),
+                                std::time::Instant::now() + std::time::Duration::from_secs(5),
+                            ));
+                        }
+                        Err(e) => {
+                            self.flash = Some((
+                                format!("Failed to copy to clipboard: {e}. Your npub: {npub}"),
+                                std::time::Instant::now() + std::time::Duration::from_secs(10),
+                            ));
+                        }
+                    },
+                    Err(e) => {
+                        self.flash = Some((
+                            format!("Failed to access clipboard: {e}. Your npub: {npub}"),
+                            std::time::Instant::now() + std::time::Duration::from_secs(10),
+                        ));
+                    }
+                }
             }
             "/dm" | "/d" => {
                 if parts.len() < 2 {
