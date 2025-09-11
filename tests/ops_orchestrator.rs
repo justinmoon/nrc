@@ -34,7 +34,14 @@ async fn orchestrator_reemits_storage_request_on_resume() {
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<AppEvent>();
     let (ops_cmd_tx, ops_cmd_rx) = tokio::sync::mpsc::unbounded_channel();
 
-    spawn_orchestrator(store.clone(), client, keys.clone(), event_tx, ops_cmd_rx);
+    spawn_orchestrator(
+        store.clone(),
+        client,
+        keys.clone(),
+        event_tx,
+        ops_cmd_rx,
+        tmp.path().to_path_buf(),
+    );
 
     // Wake the orchestrator and expect an OpNeedsStorageCreateGroup event
     let _ = ops_cmd_tx.send(OpsCommand::Wake);

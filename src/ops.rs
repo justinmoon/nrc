@@ -5,6 +5,8 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
+
+use crate::key_storage::KeyStorage;
 use uuid::Uuid;
 
 use crate::AppEvent;
@@ -262,6 +264,8 @@ impl OpsStore {
 pub enum OpsCommand {
     Wake,
     Updated(String),
+    // Ephemeral (not persisted) background task to save encrypted keys
+    SaveEncryptedKeys { password: String },
 }
 
 pub fn spawn_orchestrator(
@@ -270,6 +274,7 @@ pub fn spawn_orchestrator(
     keys: Keys,
     event_tx: mpsc::UnboundedSender<AppEvent>,
     mut cmd_rx: mpsc::UnboundedReceiver<OpsCommand>,
+    datadir: PathBuf,
 ) {
     tokio::spawn(async move {
         loop {
@@ -285,7 +290,35 @@ pub fn spawn_orchestrator(
 
             // Wait for a wake signal or small delay
             tokio::select! {
-                Some(_) = cmd_rx.recv() => { /* wake up */ }
+                Some(cmd) = cmd_rx.recv() => {
+                    match cmd {
+                        OpsCommand::Wake => { /* wake up */ }
+                        OpsCommand::Updated(_) => { /* nothing extra to do here */ }
+                        OpsCommand::SaveEncryptedKeys { password } => {
+                            let datadir_clone = datadir.clone();
+                            let keys_clone = keys.clone();
+                            let event_tx_clone = event_tx.clone();
+                            tokio::task::spawn_blocking(move || {
+                                let storage = KeyStorage::new(&datadir_clone);
+                                match storage.save_encrypted(&keys_clone, &password) {
+                                    Ok(_) => {
+                                        let _ = event_tx_clone.send(AppEvent::FlashMessage(
+                                            "Encrypted keys saved".to_string(),
+                                            std::time::Duration::from_secs(3),
+                                        ));
+                                    }
+                                    Err(e) => {
+                                        log::error!("Failed to save encrypted keys: {e}");
+                                        let _ = event_tx_clone.send(AppEvent::FlashMessage(
+                                            format!("Failed to save keys: {e}"),
+                                            std::time::Duration::from_secs(5),
+                                        ));
+                                    }
+                                }
+                            });
+                        }
+                    }
+                }
                 _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => {}
             }
         }
