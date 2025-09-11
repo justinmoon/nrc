@@ -1,7 +1,6 @@
 mod keyboard;
 mod render;
 
-
 use anyhow::Result;
 use clap::Parser;
 use crossterm::{
