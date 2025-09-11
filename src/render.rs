@@ -29,6 +29,7 @@ pub fn render(f: &mut Frame, app: &App) {
             input,
             *scroll_offset,
             &app.flash,
+            &app.error,
         ),
         Page::Help { selected_section } => render_help(f, *selected_section),
         Page::OpsDashboard { items, selected } => render_ops_dashboard(f, items, *selected),
@@ -142,6 +143,7 @@ pub fn render_chat(
     input: &str,
     scroll_offset: usize,
     flash: &Option<(String, std::time::Instant)>,
+    error: &Option<String>,
 ) {
     let size = f.area();
 
@@ -220,25 +222,22 @@ pub fn render_chat(
         None
     };
 
-    // Split chat area vertically - dynamic based on flash message
-    let chat_chunks = if let Some(height) = flash_height {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(0),         // Messages area
-                Constraint::Length(height), // Dynamic flash message area
-                Constraint::Length(3),      // Input area with "INPUT" label
-            ])
-            .split(main_chunks[1])
-    } else {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(0),    // Messages area
-                Constraint::Length(3), // Input area with "INPUT" label
-            ])
-            .split(main_chunks[1])
-    };
+    // Split chat area vertically - dynamic based on error + flash message
+    let mut constraints: Vec<Constraint> = vec![
+        Constraint::Min(0), // Messages area
+    ];
+    let has_error = error.is_some();
+    if has_error {
+        constraints.push(Constraint::Length(1)); // Single-line error banner
+    }
+    if let Some(h) = flash_height {
+        constraints.push(Constraint::Length(h)); // Flash area
+    }
+    constraints.push(Constraint::Length(3)); // Input area with "INPUT" label
+    let chat_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
+        .split(main_chunks[1]);
 
     // Render messages
     let messages_area_index = 0;
@@ -264,11 +263,19 @@ pub fn render_chat(
         Paragraph::new(message_lines).block(Block::default().borders(Borders::ALL).title("CHAT"));
     f.render_widget(messages_widget, chat_chunks[messages_area_index]);
 
+    // Render error banner if present (single line)
+    let mut next_slot = 2; // 0=header,1=messages, 2=optional error, then optional flash, then input
+    if let Some(err) = error {
+        let err_widget = Paragraph::new(err.as_str()).style(Style::default().fg(Color::Red));
+        f.render_widget(err_widget, chat_chunks[next_slot]);
+        next_slot += 1;
+    }
+
     // Render flash message if active
     if flash_height.is_some() {
         if let Some((msg, _)) = flash {
             // Manually wrap text to fit the available width
-            let available_width = chat_chunks[1].width.saturating_sub(2) as usize; // Account for borders
+            let available_width = chat_chunks[next_slot].width.saturating_sub(2) as usize; // Account for borders
             let mut wrapped_lines = Vec::new();
 
             // Split message into words and rebuild lines that fit
@@ -333,12 +340,12 @@ pub fn render_chat(
             }
 
             let flash_widget = Paragraph::new(wrapped_lines);
-            f.render_widget(flash_widget, chat_chunks[1]);
+            f.render_widget(flash_widget, chat_chunks[next_slot]);
         }
     }
 
     // Render input area with "INPUT" label
-    let input_index = if flash_height.is_some() { 2 } else { 1 };
+    let input_index = chat_chunks.len() - 1;
     let input_widget = Paragraph::new(input)
         .style(Style::default())
         .block(Block::default().borders(Borders::ALL).title("INPUT"));

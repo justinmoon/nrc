@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clipboard::ClipboardProvider;
 use nostr_sdk::nips::nip59;
 use nostr_sdk::prelude::*;
@@ -22,6 +22,7 @@ pub struct App {
     pub previous_page: Option<Page>,
 
     pub flash: Option<(String, Instant)>,
+    pub error: Option<String>,
     pub modal: Option<Modal>,
     pub is_processing: bool,
 
@@ -96,6 +97,7 @@ impl App {
             current_page: initial_page,
             previous_page: None,
             flash: None,
+            error: None,
             modal: None,
             is_processing: false,
             storage,
@@ -314,6 +316,8 @@ impl App {
                     &mut self.current_page
                 {
                     input.push_str(&text);
+                    // Clear any existing error on new input
+                    self.error = None;
                     let _ = self.state_tx.send(self.current_page.clone());
                 }
             }
@@ -580,12 +584,16 @@ impl App {
             (Page::Chat { input: _, .. }, KeyCode::Char(c)) => {
                 if let Page::Chat { input, .. } = &mut self.current_page {
                     input.push(c);
+                    // Clear any existing error on new input
+                    self.error = None;
                     let _ = self.state_tx.send(self.current_page.clone());
                 }
             }
             (Page::Chat { input: _, .. }, KeyCode::Backspace) => {
                 if let Page::Chat { input, .. } = &mut self.current_page {
                     input.pop();
+                    // Clear any existing error on new input
+                    self.error = None;
                     let _ = self.state_tx.send(self.current_page.clone());
                 }
             }
@@ -601,7 +609,21 @@ impl App {
 
                     // Check if it's a command
                     if input_content.starts_with("/") {
-                        self.process_command(input_content).await?;
+                        match self.process_command(input_content).await {
+                            Ok(CommandOutcome::Noop) => {
+                                self.error = None;
+                            }
+                            Ok(CommandOutcome::Flash(msg)) => {
+                                self.error = None;
+                                self.flash = Some((
+                                    msg,
+                                    std::time::Instant::now() + std::time::Duration::from_secs(5),
+                                ));
+                            }
+                            Err(e) => {
+                                self.error = Some(format!("{e:#}"));
+                            }
+                        }
                     } else {
                         // Regular message
                         self.send_event(AppEvent::SendMessage(input_content))?;
@@ -842,74 +864,52 @@ impl App {
         Ok(members)
     }
 
-    async fn process_command(&mut self, command: String) -> Result<()> {
+    async fn process_command(&mut self, command: String) -> Result<CommandOutcome> {
         log::info!("Processing command: {command}");
         let parts: Vec<&str> = command.split_whitespace().collect();
         if parts.is_empty() {
-            return Ok(());
+            return Ok(CommandOutcome::Noop);
         }
 
-        match parts[0] {
+        let res: Result<CommandOutcome> = match parts[0] {
             "/npub" | "/n" => {
                 // Copy npub to clipboard
-                let npub = self.keys.public_key().to_bech32()?;
+                let npub = self
+                    .keys
+                    .public_key()
+                    .to_bech32()
+                    .context("Failed to convert public key to bech32")?;
 
-                match clipboard::ClipboardContext::new() {
-                    Ok(mut ctx) => match ctx.set_contents(npub.clone()) {
-                        Ok(_) => {
-                            self.flash = Some((
-                                format!("Copied npub to clipboard: {npub}"),
-                                std::time::Instant::now() + std::time::Duration::from_secs(5),
-                            ));
-                        }
-                        Err(e) => {
-                            self.flash = Some((
-                                format!("Failed to copy to clipboard: {e}. Your npub: {npub}"),
-                                std::time::Instant::now() + std::time::Duration::from_secs(10),
-                            ));
-                        }
-                    },
-                    Err(e) => {
-                        self.flash = Some((
-                            format!("Failed to access clipboard: {e}. Your npub: {npub}"),
-                            std::time::Instant::now() + std::time::Duration::from_secs(10),
-                        ));
-                    }
-                }
+                let mut ctx = clipboard::ClipboardContext::new()
+                    .map_err(|e| anyhow::anyhow!("Clipboard not available: {e}"))?;
+                ctx.set_contents(npub.clone())
+                    .map_err(|e| anyhow::anyhow!("Failed to copy to clipboard: {e}"))?;
+
+                Ok(CommandOutcome::Flash(format!(
+                    "Copied npub to clipboard: {npub}"
+                )))
             }
             "/dm" | "/d" => {
                 if parts.len() < 2 {
-                    self.flash = Some((
-                        "Usage: /dm <npub>".to_string(),
-                        std::time::Instant::now() + std::time::Duration::from_secs(5),
-                    ));
-                    return Ok(());
+                    return Err(anyhow::anyhow!("Usage: /dm <npub>"));
                 }
 
                 // Parse the npub
                 let npub_str = parts[1];
-                match PublicKey::from_bech32(npub_str) {
-                    Ok(pubkey) => {
-                        // Fetch their key package and create group
-                        self.create_dm_with(pubkey).await?;
-                    }
-                    Err(e) => {
-                        self.flash = Some((
-                            format!("Invalid npub: {e}"),
-                            std::time::Instant::now() + std::time::Duration::from_secs(5),
-                        ));
-                    }
-                }
-            }
-            _ => {
-                self.flash = Some((
-                    format!("Unknown command: {}", parts[0]),
-                    std::time::Instant::now() + std::time::Duration::from_secs(5),
-                ));
-            }
-        }
+                let pubkey = PublicKey::from_bech32(npub_str)
+                    .with_context(|| format!("'{npub_str}' is not a valid npub"))?;
 
-        Ok(())
+                // Fetch their key package and create group
+                self.create_dm_with(pubkey)
+                    .await
+                    .with_context(|| format!("Failed to create DM with {npub_str}"))?;
+
+                Ok(CommandOutcome::Noop)
+            }
+            _ => Err(anyhow::anyhow!("Unknown command: {}", parts[0])),
+        };
+
+        res
     }
 
     async fn publish_key_package(&mut self) -> Result<()> {
@@ -917,7 +917,7 @@ impl App {
             .iter()
             .map(|&url| RelayUrl::parse(url))
             .collect();
-        let relays = relays?;
+        let relays = relays.context("Invalid relay URLs")?;
         let (key_package_content, tags) = self
             .storage
             .create_key_package_for_event(&self.keys.public_key(), relays)?;
@@ -939,7 +939,9 @@ impl App {
     async fn create_dm_with(&mut self, other_pubkey: PublicKey) -> Result<()> {
         log::info!(
             "=== Starting create_dm_with for {} ===",
-            other_pubkey.to_bech32()?
+            other_pubkey
+                .to_bech32()
+                .context("Failed to bech32 other pubkey")?
         );
 
         // Check if we're already in a group with this person
@@ -955,7 +957,9 @@ impl App {
         };
 
         if already_in_group {
-            let npub_str = other_pubkey.to_bech32()?;
+            let npub_str = other_pubkey
+                .to_bech32()
+                .context("Failed to bech32 other pubkey")?;
             self.flash = Some((
                 format!("Already in a group with {npub_str}"),
                 std::time::Instant::now() + std::time::Duration::from_secs(5),
@@ -981,9 +985,14 @@ impl App {
                     .iter()
                     .map(|&url| RelayUrl::parse(url))
                     .collect();
-                let relay_urls = relay_urls?;
+                let relay_urls = relay_urls.context("Invalid relay URLs")?;
                 let config = NostrGroupConfigData::new(
-                    format!("DM with {}", other_pubkey.to_bech32()?),
+                    format!(
+                        "DM with {}",
+                        other_pubkey
+                            .to_bech32()
+                            .context("Failed to bech32 other pubkey")?
+                    ),
                     "Direct message".to_string(),
                     None,
                     None,
@@ -1031,10 +1040,11 @@ impl App {
                             self.navigate_to(PageType::Chat(Some(group_id))).await?;
                         } else {
                             log::error!("No welcome rumor produced by storage.create_group");
+                            anyhow::bail!("No welcome rumor produced by storage.create_group");
                         }
                     }
                     Err(e) => {
-                        log::error!("Failed to create group: {e}");
+                        return Err(e).context("Failed to create group in storage");
                     }
                 }
             }
@@ -1044,7 +1054,10 @@ impl App {
                     other_pubkey,
                     step: CreateDmStep::FetchKeyPackage,
                 };
-                let op_id = self.ops_store.enqueue(kind)?;
+                let op_id = self
+                    .ops_store
+                    .enqueue(kind)
+                    .context("Failed to enqueue CreateDm operation")?;
                 log::info!("Enqueued CreateDm op {op_id}");
                 let _ = self.ops_cmd_tx.send(OpsCommand::Wake);
             }
@@ -1123,4 +1136,10 @@ impl App {
 
         Ok(())
     }
+}
+
+// Outcomes that command processing can produce. UI layer decides how to present them.
+enum CommandOutcome {
+    Noop,
+    Flash(String),
 }
