@@ -37,12 +37,6 @@ pub fn render(f: &mut Frame, app: &App) {
     if let Some(modal) = &app.modal {
         render_modal(f, modal);
     }
-
-    if let Some((msg, expiry)) = &app.flash {
-        if std::time::Instant::now() < *expiry {
-            render_flash(f, msg);
-        }
-    }
 }
 
 fn render_onboarding(f: &mut Frame, input: &str, mode: &OnboardingMode, error: &Option<String>) {
@@ -139,7 +133,7 @@ fn render_initializing(f: &mut Frame, message: &str, _progress: f32) {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn render_chat(
+pub fn render_chat(
     f: &mut Frame,
     groups: &[GroupSummary],
     selected_group_index: usize,
@@ -191,16 +185,74 @@ fn render_chat(
     let groups_list = List::new(group_items).block(Block::default().borders(Borders::ALL));
     f.render_widget(groups_list, groups_chunks[1]);
 
-    // Split chat area vertically
-    let chat_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // Header "CHAT"
-            Constraint::Min(0),    // Messages area
-            Constraint::Length(2), // Flash/error area (hidden when not used)
-            Constraint::Length(3), // Input area with "INPUT" label
-        ])
-        .split(main_chunks[1]);
+    // Calculate flash message height if present
+    let flash_height = if let Some((msg, expiry)) = flash {
+        if std::time::Instant::now() < *expiry {
+            // Calculate how many lines we need for the flash message
+            let available_width = main_chunks[1].width.saturating_sub(2) as usize;
+            let mut line_count = 0;
+            let words: Vec<&str> = msg.split_whitespace().collect();
+            let mut current_line = String::new();
+
+            for word in &words {
+                if current_line.is_empty() {
+                    if word.len() <= available_width {
+                        current_line = word.to_string();
+                    } else {
+                        // Word needs to be broken
+                        line_count += word.len().div_ceil(available_width);
+                        current_line.clear();
+                    }
+                } else {
+                    let test_line = format!("{current_line} {word}");
+                    if test_line.len() <= available_width {
+                        current_line = test_line;
+                    } else {
+                        line_count += 1;
+                        if word.len() <= available_width {
+                            current_line = word.to_string();
+                        } else {
+                            // Word needs to be broken
+                            line_count += word.len().div_ceil(available_width);
+                            current_line.clear();
+                        }
+                    }
+                }
+            }
+            if !current_line.is_empty() {
+                line_count += 1;
+            }
+
+            // No extra padding needed
+            Some(line_count.min(10) as u16) // Cap at 10 lines max
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Split chat area vertically - dynamic based on flash message
+    let chat_chunks = if let Some(height) = flash_height {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),      // Header "CHAT"
+                Constraint::Min(0),         // Messages area
+                Constraint::Length(height), // Dynamic flash message area
+                Constraint::Length(3),      // Input area with "INPUT" label
+            ])
+            .split(main_chunks[1])
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3), // Header "CHAT"
+                Constraint::Min(0),    // Messages area
+                Constraint::Length(3), // Input area with "INPUT" label
+            ])
+            .split(main_chunks[1])
+    };
 
     // Render chat header
     let chat_header = Paragraph::new("CHAT")
@@ -231,21 +283,85 @@ fn render_chat(
         Paragraph::new(message_lines).block(Block::default().borders(Borders::ALL));
     f.render_widget(messages_widget, chat_chunks[1]);
 
-    // Render flash/error area if there's a message
-    if let Some((msg, expiry)) = flash {
-        if std::time::Instant::now() < *expiry {
-            let flash_widget = Paragraph::new(msg.as_str())
-                .style(Style::default().fg(Color::Yellow))
-                .block(Block::default().borders(Borders::ALL));
+    // Render flash message if active
+    if flash_height.is_some() {
+        if let Some((msg, _)) = flash {
+            // Manually wrap text to fit the available width
+            let available_width = chat_chunks[2].width.saturating_sub(2) as usize; // Account for borders
+            let mut wrapped_lines = Vec::new();
+
+            // Split message into words and rebuild lines that fit
+            let words: Vec<&str> = msg.split_whitespace().collect();
+            let mut current_line = String::new();
+
+            for word in words {
+                // Check if we need to add this word to current line or start new line
+                if current_line.is_empty() {
+                    // Starting a new line
+                    if word.len() <= available_width {
+                        current_line = word.to_string();
+                    } else {
+                        // Word is too long, need to break it
+                        let mut remaining = word;
+                        while !remaining.is_empty() {
+                            let chunk_size = remaining.len().min(available_width);
+                            let (chunk, rest) = remaining.split_at(chunk_size);
+                            wrapped_lines.push(
+                                Line::from(chunk.to_string())
+                                    .style(Style::default().fg(Color::Green)),
+                            );
+                            remaining = rest;
+                        }
+                    }
+                } else {
+                    // Adding to existing line
+                    let test_line = format!("{current_line} {word}");
+                    if test_line.len() <= available_width {
+                        current_line = test_line;
+                    } else {
+                        // Current line is full, push it and start new one
+                        wrapped_lines.push(
+                            Line::from(current_line.clone())
+                                .style(Style::default().fg(Color::Green)),
+                        );
+
+                        // Handle the word for the new line
+                        if word.len() <= available_width {
+                            current_line = word.to_string();
+                        } else {
+                            // Word is too long, need to break it
+                            let mut remaining = word;
+                            while !remaining.is_empty() {
+                                let chunk_size = available_width.min(remaining.len());
+                                let (chunk, rest) = remaining.split_at(chunk_size);
+                                wrapped_lines.push(
+                                    Line::from(chunk.to_string())
+                                        .style(Style::default().fg(Color::Green)),
+                                );
+                                remaining = rest;
+                            }
+                            current_line.clear();
+                        }
+                    }
+                }
+            }
+
+            if !current_line.is_empty() {
+                wrapped_lines
+                    .push(Line::from(current_line).style(Style::default().fg(Color::Green)));
+            }
+
+            let flash_widget = Paragraph::new(wrapped_lines);
             f.render_widget(flash_widget, chat_chunks[2]);
         }
     }
 
     // Render input area with "INPUT" label
+    let input_index = if flash_height.is_some() { 3 } else { 2 };
     let input_widget = Paragraph::new(input)
         .style(Style::default())
         .block(Block::default().borders(Borders::ALL).title("INPUT"));
-    f.render_widget(input_widget, chat_chunks[3]);
+    f.render_widget(input_widget, chat_chunks[input_index]);
 }
 
 fn render_help(f: &mut Frame, _selected_section: usize) {
@@ -337,20 +453,6 @@ fn render_modal(f: &mut Frame, modal: &Modal) {
 
     let block = Block::default().borders(Borders::ALL).title("Modal");
     let paragraph = Paragraph::new(text).block(block);
-    f.render_widget(paragraph, area);
-}
-
-fn render_flash(f: &mut Frame, message: &str) {
-    let size = f.area();
-    let area = Rect {
-        x: 0,
-        y: 0,
-        width: size.width,
-        height: 1,
-    };
-
-    let paragraph =
-        Paragraph::new(message).style(Style::default().bg(Color::Yellow).fg(Color::Black));
     f.render_widget(paragraph, area);
 }
 

@@ -1,0 +1,19 @@
+---
+source: src/render_test.rs
+expression: output
+---
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+This is a very long flash     
+message that should wrap      
+across multiple lines to      
+test dynamic height           
+allocation                    
+┌INPUT───────────────────────┐
+│                            │
+└────────────────────────────┘
