@@ -15,6 +15,7 @@ use crate::config::get_default_relays;
 use crate::events::{AppEvent, NetworkCommand};
 use crate::key_storage::KeyStorage;
 use crate::ops::{spawn_orchestrator, CreateDmStep, OperationKind, OpsCommand, OpsStore};
+use crate::profiles::Profiles;
 use crate::ui_state::{GroupSummary, Message, Modal, OpsItem, Page, PageType};
 
 pub struct App {
@@ -38,12 +39,15 @@ pub struct App {
     pub event_rx: Option<mpsc::UnboundedReceiver<AppEvent>>,
     pub command_tx: mpsc::Sender<NetworkCommand>,
 
-    pub profiles: Arc<Mutex<HashMap<PublicKey, Metadata>>>,
+    pub profiles: Profiles,
     pub welcome_rumors: Arc<Mutex<HashMap<PublicKey, UnsignedEvent>>>,
 
     // Persistent operations orchestrator
     pub ops_store: OpsStore,
     pub ops_cmd_tx: mpsc::UnboundedSender<OpsCommand>,
+
+    // Onboarding: hold display name until we can publish profile
+    pending_display_name: Option<String>,
 }
 
 impl App {
@@ -109,10 +113,11 @@ impl App {
             event_tx,
             event_rx: Some(event_rx),
             command_tx,
-            profiles: Arc::new(Mutex::new(HashMap::new())),
+            profiles: Profiles::new(),
             welcome_rumors: Arc::new(Mutex::new(HashMap::new())),
             ops_store,
             ops_cmd_tx,
+            pending_display_name: None,
         })
     }
 
@@ -475,6 +480,11 @@ impl App {
                                                 sender: msg.pubkey,
                                                 timestamp: msg.created_at,
                                             });
+                                            // Make sure we have their profile metadata
+                                            let _ = self
+                                                .profiles
+                                                .ensure(&self.client, vec![msg.pubkey])
+                                                .await;
                                             let _ = self.state_tx.send(self.current_page.clone());
                                         }
                                     }
@@ -505,6 +515,12 @@ impl App {
                     "Received key package from {} via subscription",
                     event.pubkey.to_bech32().unwrap_or_default()
                 );
+            }
+            AppEvent::ProfileMetadataReceived { pubkey, metadata } => {
+                // Cache latest profile metadata and refresh UI
+                self.profiles.cache(pubkey, metadata).await;
+                // Recompute current page to apply new labels
+                let _ = self.refresh_current_page().await;
             }
             AppEvent::OpNeedsStorageCreateGroup {
                 op_id,
@@ -555,6 +571,8 @@ impl App {
                             let group_id =
                                 GroupId::from_slice(group_result.group.mls_group_id.as_slice());
                             self.navigate_to(PageType::Chat(Some(group_id))).await?;
+                            // Ensure we track profile metadata for the peer
+                            let _ = self.profiles.ensure(&self.client, vec![other_pubkey]).await;
                         } else {
                             log::error!("No welcome rumor produced by storage.create_group");
                         }
@@ -767,6 +785,8 @@ impl App {
             },
             OnboardingMode::EnterDisplayName => {
                 if !input.trim().is_empty() {
+                    // Stash desired display name to publish after keys are set and we connect
+                    self.pending_display_name = Some(input.trim().to_string());
                     let new_page = Page::Onboarding {
                         input: String::new(),
                         mode: OnboardingMode::CreatePassword,
@@ -788,6 +808,8 @@ impl App {
 
                                 // Initialize MLS and publish key package
                                 self.publish_key_package().await?;
+                                // Publish profile if we captured a display name
+                                self.publish_profile_name_if_needed().await?;
 
                                 // Navigate to chat and clear history - no going back from here
                                 self.navigate_to(PageType::Chat(None)).await?;
@@ -817,6 +839,8 @@ impl App {
 
                         // Initialize MLS and publish key package
                         self.publish_key_package().await?;
+                        // Publish profile if we captured a display name
+                        self.publish_profile_name_if_needed().await?;
 
                         // Navigate to chat and clear history - no going back from here
                         self.navigate_to(PageType::Chat(None)).await?;
@@ -849,6 +873,7 @@ impl App {
     async fn load_group_summaries(&self) -> Result<Vec<GroupSummary>> {
         let groups = self.storage.get_groups()?;
         let mut summaries = Vec::new();
+        let mut dms_to_subscribe: Vec<PublicKey> = Vec::new();
 
         for group in groups {
             let id = group.mls_group_id.clone();
@@ -859,13 +884,52 @@ impl App {
                 timestamp: Timestamp::now(),
             });
 
+            // Compute a safe UI label for DMs:
+            // - If we can infer peer from any admin entry not me, use that pk
+            // - Else, infer from any message not sent by me
+            // - Else, if the stored name is "DM with <npub>" and that npub != me, use it
+            // - Label is the peer's display name if cached, otherwise "loading" (never show my own name)
+            let me = self.keys.public_key();
+            let mut label: Option<String> = None;
+            if label.is_none() {
+                if let Some(full_group) = self.storage.get_group(&id)? {
+                    if let Some(pk) = full_group
+                        .admin_pubkeys
+                        .iter()
+                        .find(|pk| **pk != me)
+                        .cloned()
+                    {
+                        let name = self.profiles.display_name(&pk);
+                        dms_to_subscribe.push(pk);
+                        label = Some(name.unwrap_or_else(|| "loading".to_string()));
+                    }
+                }
+            }
+            if let Some(pk) = messages.iter().map(|m| m.pubkey).find(|p| *p != me) {
+                let name = self.profiles.display_name(&pk);
+                dms_to_subscribe.push(pk);
+                label = Some(name.unwrap_or_else(|| "loading".to_string()));
+            } else if let Some(rest) = group.name.strip_prefix("DM with ") {
+                if let Ok(pk) = PublicKey::from_bech32(rest.trim()) {
+                    if pk != me {
+                        let name = self.profiles.display_name(&pk);
+                        dms_to_subscribe.push(pk);
+                        label = Some(name.unwrap_or_else(|| "loading".to_string()));
+                    }
+                }
+            }
+
             summaries.push(GroupSummary {
                 id,
-                name: group.name.clone(),
+                name: label.unwrap_or_else(|| "loading".to_string()),
                 member_count: 0,
                 last_message,
                 unread_count: 0,
             });
+        }
+
+        if !dms_to_subscribe.is_empty() {
+            let _ = self.profiles.ensure(&self.client, dms_to_subscribe).await;
         }
 
         Ok(summaries)
@@ -884,6 +948,21 @@ impl App {
                 timestamp: Timestamp::now(),
             })
             .collect();
+        // Ensure profile metadata for all observed senders
+        let unique_senders: Vec<PublicKey> = {
+            use std::collections::HashSet;
+            let mut set = HashSet::new();
+            let mut list = Vec::new();
+            for msg in &messages {
+                if set.insert(msg.sender) {
+                    list.push(msg.sender);
+                }
+            }
+            list
+        };
+        if !unique_senders.is_empty() {
+            let _ = self.profiles.ensure(&self.client, unique_senders).await;
+        }
         Ok(messages)
     }
 
@@ -893,7 +972,7 @@ impl App {
             .get_group(group_id)?
             .ok_or_else(|| anyhow::anyhow!("Group not found"))?;
 
-        let _profiles = self.profiles.lock().await;
+        // Profiles handled via Profiles service; implement when we show members UI
         let members = vec![];
 
         Ok(members)
@@ -968,6 +1047,33 @@ impl App {
         let op_id = self.ops_store.enqueue(kind)?;
         log::info!("Enqueued key package publish op {op_id}");
         let _ = self.ops_cmd_tx.send(OpsCommand::Wake);
+        Ok(())
+    }
+
+    async fn publish_profile_name_if_needed(&mut self) -> Result<()> {
+        let Some(name) = self.pending_display_name.take() else {
+            return Ok(());
+        };
+        let content = serde_json::json!({
+            "name": name,
+            "display_name": name,
+        })
+        .to_string();
+
+        let event = EventBuilder::new(Kind::Metadata, content)
+            .build(self.keys.public_key())
+            .sign(&self.keys)
+            .await?;
+
+        // Publish directly
+        if let Err(e) = self.client.send_event(&event).await {
+            log::warn!("Failed to publish profile: {e}");
+        }
+
+        // Cache locally for immediate UI benefit
+        if let Ok(meta) = Metadata::from_json(&event.content) {
+            self.profiles.cache(self.keys.public_key(), meta).await;
+        }
         Ok(())
     }
 
@@ -1095,6 +1201,8 @@ impl App {
                     .context("Failed to enqueue CreateDm operation")?;
                 log::info!("Enqueued CreateDm op {op_id}");
                 let _ = self.ops_cmd_tx.send(OpsCommand::Wake);
+                // Ensure peer profile becomes available quickly
+                let _ = self.profiles.ensure(&self.client, vec![other_pubkey]).await;
             }
         }
 
@@ -1171,6 +1279,8 @@ impl App {
 
         Ok(())
     }
+
+    // Profiles logic now lives in profiles::Profiles service
 }
 
 // Outcomes that command processing can produce. UI layer decides how to present them.

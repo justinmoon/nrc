@@ -1,3 +1,4 @@
+use nostr_sdk::prelude::*;
 use nrc::app::App;
 use nrc::ui_state::{GroupSummary, Message, Modal, OnboardingMode, OpsItem, Page};
 use ratatui::{
@@ -7,6 +8,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
     Frame,
 };
+use std::collections::HashMap;
 
 pub fn render(f: &mut Frame, app: &App) {
     match &app.current_page {
@@ -20,17 +22,23 @@ pub fn render(f: &mut Frame, app: &App) {
             input,
             scroll_offset,
             ..
-        } => render_chat(
-            f,
-            groups,
-            *selected_group_index,
-            group_info.as_ref(),
-            messages,
-            input,
-            *scroll_offset,
-            &app.flash,
-            &app.error,
-        ),
+        } => {
+            // Snapshot my pubkey and known profiles (non-blocking best-effort)
+            let profiles_snapshot: Option<HashMap<PublicKey, Metadata>> =
+                app.profiles.try_snapshot();
+            render_chat(
+                f,
+                groups,
+                *selected_group_index,
+                group_info.as_ref(),
+                messages,
+                input,
+                *scroll_offset,
+                &app.flash,
+                &app.error,
+                profiles_snapshot,
+            )
+        }
         Page::Help { selected_section } => render_help(f, *selected_section),
         Page::OpsDashboard { items, selected } => render_ops_dashboard(f, items, *selected),
     }
@@ -144,6 +152,7 @@ pub fn render_chat(
     scroll_offset: usize,
     flash: &Option<(String, std::time::Instant)>,
     error: &Option<String>,
+    profiles: Option<HashMap<PublicKey, Metadata>>,
 ) {
     let size = f.area();
 
@@ -175,7 +184,6 @@ pub fn render_chat(
                 ListItem::new(group.name.clone()).style(style)
             })
             .collect();
-
         let groups_list =
             List::new(group_items).block(Block::default().borders(Borders::ALL).title("CHATS"));
         f.render_widget(groups_list, sidebar);
@@ -273,17 +281,10 @@ pub fn render_chat(
             .iter()
             .skip(scroll_offset)
             .take(chat_chunks[messages_area_index].height as usize - 2);
-
         let message_lines: Vec<Line> = visible_messages
             .map(|msg| {
-                // Format sender with shortened pubkey
-                let sender_str = format!("{}", msg.sender);
-                let sender_short = if sender_str.len() > 8 {
-                    format!("{}...", &sender_str[..8])
-                } else {
-                    sender_str
-                };
-                Line::from(format!("{}: {}", sender_short, msg.content))
+                let sender_name = resolve_display_name(&msg.sender, profiles.as_ref());
+                Line::from(format!("{}: {}", sender_name, msg.content))
             })
             .collect();
 
@@ -381,6 +382,25 @@ pub fn render_chat(
     f.render_widget(input_widget, chat_chunks[input_index]);
 }
 
+fn resolve_display_name(pk: &PublicKey, profiles: Option<&HashMap<PublicKey, Metadata>>) -> String {
+    if let Some(profiles) = profiles {
+        if let Some(meta) = profiles.get(pk) {
+            if let Some(name) = meta.display_name.clone().filter(|s| !s.is_empty()) {
+                return name;
+            }
+            if let Some(name) = meta.name.clone().filter(|s| !s.is_empty()) {
+                return name;
+            }
+        }
+    }
+    // Fallback: short npub
+    let npub = nrc::pubkey_to_bech32_safe(pk);
+    if npub.len() > 12 {
+        format!("{}…", &npub[..12])
+    } else {
+        npub
+    }
+}
 fn render_help(f: &mut Frame, _selected_section: usize) {
     let size = f.area();
 

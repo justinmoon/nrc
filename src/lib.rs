@@ -5,6 +5,7 @@ pub mod events;
 pub mod key_storage;
 pub mod notification_handler;
 pub mod ops;
+pub mod profiles;
 pub mod ui_state;
 pub mod utils;
 

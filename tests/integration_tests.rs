@@ -551,7 +551,7 @@ async fn test_two_users_messaging() -> Result<()> {
 
         // Wait for message to propagate
         println!("Waiting for message to propagate to relays...");
-        tokio::time::sleep(Duration::from_millis(3000)).await;
+        tokio::time::sleep(Duration::from_millis(5000)).await;
 
         // Bob processes incoming messages
         println!("Bob processing incoming messages...");
@@ -580,7 +580,7 @@ async fn test_two_users_messaging() -> Result<()> {
 
         // Wait for message to propagate
         println!("Waiting for Bob's message to propagate to relays...");
-        tokio::time::sleep(Duration::from_millis(3000)).await;
+        tokio::time::sleep(Duration::from_millis(5000)).await;
 
         // Alice processes incoming messages
         println!("Alice processing incoming messages...");
@@ -625,6 +625,112 @@ async fn test_two_users_messaging() -> Result<()> {
     assert!(
         matches!(bob.app.current_page, Page::Chat { .. }),
         "Bob should be at Chat page"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_dm_label_never_own_name_and_loading_ok() -> Result<()> {
+    // top and bottom users with profile names
+    let mut top = TestApp::new().await?;
+    top.send_key('1').await?; // choose new keys
+    top.send_enter().await?;
+    top.send_keys("top").await?; // display name
+    top.send_enter().await?;
+    top.send_keys("password123").await?; // password
+    top.send_enter().await?;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let mut bottom = TestApp::new().await?;
+    bottom.send_key('1').await?;
+    bottom.send_enter().await?;
+    bottom.send_keys("bottom").await?;
+    bottom.send_enter().await?;
+    bottom.send_keys("password123").await?;
+    bottom.send_enter().await?;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Create DM from top to bottom
+    let bottom_npub = bottom.get_npub();
+    if let Page::Chat { input, .. } = &mut top.app.current_page {
+        *input = format!("/dm {bottom_npub}");
+    }
+    top.app
+        .handle_event(AppEvent::KeyPress(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::empty(),
+        )))
+        .await?;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    top.process_incoming_messages().await?;
+
+    // Bottom processes welcome and navigates
+    bottom.process_incoming_messages().await?;
+    let group_id = match &bottom.app.current_page {
+        Page::Chat { groups, .. } if !groups.is_empty() => groups[0].id.clone(),
+        _ => {
+            // wait a bit longer if needed
+            tokio::time::sleep(Duration::from_millis(800)).await;
+            bottom.process_incoming_messages().await?;
+            match &bottom.app.current_page {
+                Page::Chat { groups, .. } if !groups.is_empty() => groups[0].id.clone(),
+                _ => panic!("Bottom did not join the group"),
+            }
+        }
+    };
+    bottom
+        .app
+        .navigate_to(nrc::ui_state::PageType::Chat(Some(group_id)))
+        .await?;
+
+    // Assert DM label in sidebar never equals own display name. "loading" is acceptable.
+    let top_label = match &top.app.current_page {
+        Page::Chat { groups, .. } if !groups.is_empty() => groups[0].name.clone(),
+        _ => String::new(),
+    };
+    let bottom_label = match &bottom.app.current_page {
+        Page::Chat { groups, .. } if !groups.is_empty() => groups[0].name.clone(),
+        _ => String::new(),
+    };
+
+    assert_ne!(
+        top_label, "top",
+        "Top must not see their own name as DM label"
+    );
+    assert_ne!(
+        bottom_label, "bottom",
+        "Bottom must not see their own name as DM label"
+    );
+
+    // After some messages, labels should resolve to peer display names
+    top.send_message("hello").await?;
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    top.process_incoming_messages().await?;
+    bottom.process_incoming_messages().await?;
+    // Wait a bit longer for profile metadata and refreshes to land
+    for _ in 0..10 {
+        top.process_incoming_messages().await?;
+        bottom.process_incoming_messages().await?;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+
+    let top_label_after = match &top.app.current_page {
+        Page::Chat { groups, .. } if !groups.is_empty() => groups[0].name.clone(),
+        _ => String::new(),
+    };
+    let bottom_label_after = match &bottom.app.current_page {
+        Page::Chat { groups, .. } if !groups.is_empty() => groups[0].name.clone(),
+        _ => String::new(),
+    };
+
+    assert_eq!(
+        top_label_after, "bottom",
+        "Top should label chat as peer display name"
+    );
+    assert_eq!(
+        bottom_label_after, "top",
+        "Bottom should label chat as peer display name"
     );
 
     Ok(())

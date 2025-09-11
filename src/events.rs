@@ -65,6 +65,11 @@ pub enum AppEvent {
     KeyPackageReceived {
         event: Event,
     },
+    // Profile metadata (Kind 0) received for a user
+    ProfileMetadataReceived {
+        pubkey: PublicKey,
+        metadata: Metadata,
+    },
     // Orchestrator -> UI: requests a storage operation for an in-flight op
     OpNeedsStorageCreateGroup {
         op_id: String,

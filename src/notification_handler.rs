@@ -81,6 +81,15 @@ pub fn spawn_notification_handler(
                                     event: event.as_ref().clone(),
                                 });
                             }
+                            Kind::Metadata => {
+                                // Forward profile metadata updates
+                                if let Ok(metadata) = Metadata::from_json(&event.content) {
+                                    let _ = event_tx.send(AppEvent::ProfileMetadataReceived {
+                                        pubkey: event.pubkey,
+                                        metadata,
+                                    });
+                                }
+                            }
                             _ => {
                                 // Handle other event types if needed
                                 log::debug!("Received event of kind: {}", event.kind);
