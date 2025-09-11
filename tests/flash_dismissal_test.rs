@@ -16,6 +16,7 @@ mod tests {
         let keys = Keys::generate();
         let storage = NostrMlsSqliteStorage::new(db_path.to_str().unwrap()).unwrap();
         let nostr_mls = NostrMls::new(storage);
+        #[allow(clippy::arc_with_non_send_sync)]
         let storage_arc = Arc::new(nostr_mls);
         let client = Client::default();
         let key_storage = nrc::key_storage::KeyStorage::new(temp_dir.path());
