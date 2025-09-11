@@ -326,9 +326,13 @@ impl App {
             }
             AppEvent::FlashMessage(msg, duration) => {
                 self.flash = Some((msg, Instant::now() + duration));
+                // Trigger re-render to show flash message
+                let _ = self.state_tx.send(self.current_page.clone());
             }
             AppEvent::ClearFlash => {
                 self.flash = None;
+                // Trigger re-render to clear flash message
+                let _ = self.state_tx.send(self.current_page.clone());
             }
             AppEvent::Resize => {
                 // Just trigger a re-render by sending current state
@@ -567,6 +571,13 @@ impl App {
 
     async fn handle_keypress(&mut self, key_event: crossterm::event::KeyEvent) -> Result<()> {
         use crossterm::event::{KeyCode, KeyModifiers};
+
+        // Dismiss flash message on any keystroke (as a side-effect)
+        // But continue processing the keystroke normally
+        if self.flash.is_some() {
+            self.flash = None;
+            let _ = self.state_tx.send(self.current_page.clone());
+        }
 
         // Extract necessary data first to avoid borrowing conflicts
         let key_code = key_event.code;

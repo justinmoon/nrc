@@ -249,7 +249,13 @@ async fn run_app<B: ratatui::backend::Backend>(
                     {
                         return Ok(());
                     }
+                    // Check if we have a flash message before handling the key
+                    let had_flash = app.flash.is_some();
                     app.handle_event(event).await?;
+                    // If we had a flash and it's now gone, force immediate re-render
+                    if had_flash && app.flash.is_none() {
+                        force_render = true;
+                    }
                 }
                 AppEvent::Resize => {
                     force_render = true;
