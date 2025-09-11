@@ -89,6 +89,7 @@ impl App {
             keys.clone(),
             event_tx.clone(),
             ops_cmd_rx,
+            key_storage.datadir().to_path_buf(),
         );
 
         Ok(Self {
@@ -748,8 +749,12 @@ impl App {
                             }
                         }
                     } else {
-                        // CreatePassword mode - save keys first
-                        self.key_storage.save_encrypted(&self.keys, &input)?;
+                        // CreatePassword mode - save keys in background (non-blocking)
+                        let _ = self
+                            .ops_cmd_tx
+                            .send(crate::ops::OpsCommand::SaveEncryptedKeys {
+                                password: input.clone(),
+                            });
 
                         self.navigate_to(PageType::Initializing).await?;
 
