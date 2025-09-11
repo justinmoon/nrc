@@ -3,7 +3,7 @@ use nrc::ui_state::{GroupSummary, Message, Modal, OnboardingMode, OpsItem, Page}
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
-    text::{Line, Text},
+    text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
     Frame,
 };
@@ -147,39 +147,45 @@ pub fn render_chat(
 ) {
     let size = f.area();
 
-    // Split horizontally: groups list on left, chat on right
-    let main_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(30), // Groups sidebar
-            Constraint::Min(0),     // Chat area
-        ])
-        .split(size);
+    // If there are chats, split with sidebar; otherwise use full width for main chat/help
+    let (sidebar_area, main_area) = if groups.is_empty() {
+        (None, size)
+    } else {
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(30), // Groups sidebar
+                Constraint::Min(0),     // Chat area
+            ])
+            .split(size);
+        (Some(chunks[0]), chunks[1])
+    };
 
-    // Render groups sidebar with "CHATS" header
-    // Render group list
-    let group_items: Vec<ListItem> = groups
-        .iter()
-        .enumerate()
-        .map(|(i, group)| {
-            let style = if i == selected_group_index {
-                Style::default().bg(Color::Blue).fg(Color::White)
-            } else {
-                Style::default()
-            };
-            ListItem::new(group.name.clone()).style(style)
-        })
-        .collect();
+    // Render groups sidebar with "CHATS" header (only when groups exist)
+    if let Some(sidebar) = sidebar_area {
+        let group_items: Vec<ListItem> = groups
+            .iter()
+            .enumerate()
+            .map(|(i, group)| {
+                let style = if i == selected_group_index {
+                    Style::default().bg(Color::Blue).fg(Color::White)
+                } else {
+                    Style::default()
+                };
+                ListItem::new(group.name.clone()).style(style)
+            })
+            .collect();
 
-    let groups_list =
-        List::new(group_items).block(Block::default().borders(Borders::ALL).title("CHATS"));
-    f.render_widget(groups_list, main_chunks[0]);
+        let groups_list =
+            List::new(group_items).block(Block::default().borders(Borders::ALL).title("CHATS"));
+        f.render_widget(groups_list, sidebar);
+    }
 
     // Calculate flash message height if present
     let flash_height = if let Some((msg, expiry)) = flash {
         if std::time::Instant::now() < *expiry {
             // Calculate how many lines we need for the flash message
-            let available_width = main_chunks[1].width.saturating_sub(2) as usize;
+            let available_width = main_area.width.saturating_sub(2) as usize;
             let mut line_count = 0;
             let words: Vec<&str> = msg.split_whitespace().collect();
             let mut current_line = String::new();
@@ -223,11 +229,8 @@ pub fn render_chat(
     };
 
     // Split chat area vertically - dynamic based on error + flash message
-    let mut constraints: Vec<Constraint> = vec![
-        Constraint::Min(0), // Messages area
-    ];
-    let has_error = error.is_some();
-    if has_error {
+    let mut constraints: Vec<Constraint> = vec![Constraint::Min(0)]; // Messages/help area
+    if error.is_some() {
         constraints.push(Constraint::Length(1)); // Single-line error banner
     }
     if let Some(h) = flash_height {
@@ -237,34 +240,60 @@ pub fn render_chat(
     let chat_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
-        .split(main_chunks[1]);
+        .split(main_area);
 
-    // Render messages
+    // Render messages or help when there are no chats
     let messages_area_index = 0;
-    let visible_messages = messages
-        .iter()
-        .skip(scroll_offset)
-        .take(chat_chunks[messages_area_index].height as usize - 2);
+    if groups.is_empty() {
+        // Help content for empty chat state — default text color; highlight commands
+        let help = Text::from(vec![
+            Line::from("Welcome to NRC"),
+            Line::from(""),
+            Line::from("Get started:"),
+            Line::from(vec![
+                Span::raw("  - "),
+                Span::styled("/dm", Style::default().fg(Color::Yellow)),
+                Span::raw(" <npub>  (or "),
+                Span::styled("/d", Style::default().fg(Color::Yellow)),
+                Span::raw(")  Start a DM"),
+            ]),
+            Line::from(vec![
+                Span::raw("  - "),
+                Span::styled("/npub", Style::default().fg(Color::Yellow)),
+                Span::raw("       (or "),
+                Span::styled("/n", Style::default().fg(Color::Yellow)),
+                Span::raw(")  Copy your npub"),
+            ]),
+        ]);
+        let help_widget =
+            Paragraph::new(help).block(Block::default().borders(Borders::ALL).title("HELP"));
+        f.render_widget(help_widget, chat_chunks[messages_area_index]);
+    } else {
+        let visible_messages = messages
+            .iter()
+            .skip(scroll_offset)
+            .take(chat_chunks[messages_area_index].height as usize - 2);
 
-    let message_lines: Vec<Line> = visible_messages
-        .map(|msg| {
-            // Format sender with shortened pubkey
-            let sender_str = format!("{}", msg.sender);
-            let sender_short = if sender_str.len() > 8 {
-                format!("{}...", &sender_str[..8])
-            } else {
-                sender_str
-            };
-            Line::from(format!("{}: {}", sender_short, msg.content))
-        })
-        .collect();
+        let message_lines: Vec<Line> = visible_messages
+            .map(|msg| {
+                // Format sender with shortened pubkey
+                let sender_str = format!("{}", msg.sender);
+                let sender_short = if sender_str.len() > 8 {
+                    format!("{}...", &sender_str[..8])
+                } else {
+                    sender_str
+                };
+                Line::from(format!("{}: {}", sender_short, msg.content))
+            })
+            .collect();
 
-    let messages_widget =
-        Paragraph::new(message_lines).block(Block::default().borders(Borders::ALL).title("CHAT"));
-    f.render_widget(messages_widget, chat_chunks[messages_area_index]);
+        let messages_widget = Paragraph::new(message_lines)
+            .block(Block::default().borders(Borders::ALL).title("CHAT"));
+        f.render_widget(messages_widget, chat_chunks[messages_area_index]);
+    }
 
     // Render error banner if present (single line)
-    let mut next_slot = 2; // 0=header,1=messages, 2=optional error, then optional flash, then input
+    let mut next_slot = 1; // 0=messages/help, then optional error, then optional flash, then input
     if let Some(err) = error {
         let err_widget = Paragraph::new(err.as_str()).style(Style::default().fg(Color::Red));
         f.render_widget(err_widget, chat_chunks[next_slot]);

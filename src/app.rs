@@ -131,7 +131,7 @@ impl App {
             PageType::Chat(maybe_group_id) => {
                 let groups = self.load_group_summaries().await?;
 
-                // If no group selected, show empty chat
+                // If a specific group was requested, render it.
                 if let Some(group_id) = maybe_group_id {
                     let selected_group_index =
                         groups.iter().position(|g| g.id == group_id).unwrap_or(0);
@@ -153,8 +153,8 @@ impl App {
                         scroll_offset: 0,
                         typing_members: vec![],
                     })
-                } else {
-                    // No group selected - show empty state
+                } else if groups.is_empty() {
+                    // No groups exist — show empty/help state in Chat view
                     Ok(Page::Chat {
                         groups,
                         selected_group_index: 0,
@@ -162,8 +162,10 @@ impl App {
                         group_info: Box::new(nrc_mls_storage::groups::types::Group {
                             mls_group_id: GroupId::from_slice(&[0u8; 32]),
                             nostr_group_id: [0u8; 32],
-                            name: "Welcome to NRC".to_string(),
-                            description: "Use /dm <npub> to start a conversation".to_string(),
+                            name: "No chats yet".to_string(),
+                            description:
+                                "Start a DM with /dm <npub> (or /d). Copy your npub with /npub (or /n)."
+                                    .to_string(),
                             admin_pubkeys: std::collections::BTreeSet::new(),
                             last_message_id: None,
                             last_message_at: None,
@@ -175,6 +177,28 @@ impl App {
                         }),
                         messages: vec![],
                         members: vec![],
+                        input: String::new(),
+                        scroll_offset: 0,
+                        typing_members: vec![],
+                    })
+                } else {
+                    // No specific group requested — default to first existing group
+                    let selected_group_index = 0;
+                    let group_id = groups[0].id.clone();
+                    let group_info = self
+                        .storage
+                        .get_group(&group_id)?
+                        .ok_or_else(|| anyhow::anyhow!("Group not found"))?;
+                    let messages = self.load_chat_messages(&group_id, 100).await?;
+                    let members = self.load_group_members(&group_id).await?;
+
+                    Ok(Page::Chat {
+                        groups,
+                        selected_group_index,
+                        group_id,
+                        group_info: Box::new(group_info),
+                        messages,
+                        members,
                         input: String::new(),
                         scroll_offset: 0,
                         typing_members: vec![],
