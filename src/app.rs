@@ -15,6 +15,7 @@ use crate::config::get_default_relays;
 use crate::events::{AppEvent, NetworkCommand};
 use crate::key_storage::KeyStorage;
 use crate::ops::{spawn_orchestrator, CreateDmStep, OperationKind, OpsCommand, OpsStore};
+use crate::profiles::Profiles;
 use crate::ui_state::{GroupSummary, Message, Modal, OpsItem, Page, PageType};
 
 pub struct App {
@@ -38,7 +39,7 @@ pub struct App {
     pub event_rx: Option<mpsc::UnboundedReceiver<AppEvent>>,
     pub command_tx: mpsc::Sender<NetworkCommand>,
 
-    pub profiles: Arc<Mutex<HashMap<PublicKey, Metadata>>>,
+    pub profiles: Profiles,
     pub welcome_rumors: Arc<Mutex<HashMap<PublicKey, UnsignedEvent>>>,
 
     // Persistent operations orchestrator
@@ -112,7 +113,7 @@ impl App {
             event_tx,
             event_rx: Some(event_rx),
             command_tx,
-            profiles: Arc::new(Mutex::new(HashMap::new())),
+            profiles: Profiles::new(),
             welcome_rumors: Arc::new(Mutex::new(HashMap::new())),
             ops_store,
             ops_cmd_tx,
@@ -479,9 +480,10 @@ impl App {
                                                 sender: msg.pubkey,
                                                 timestamp: msg.created_at,
                                             });
-                                            // Make sure we have their profile metadata (subscribe + fetch fallback)
+                                            // Make sure we have their profile metadata
                                             let _ = self
-                                                .ensure_profiles_available(vec![msg.pubkey])
+                                                .profiles
+                                                .ensure(&self.client, vec![msg.pubkey])
                                                 .await;
                                             let _ = self.state_tx.send(self.current_page.clone());
                                         }
@@ -516,10 +518,7 @@ impl App {
             }
             AppEvent::ProfileMetadataReceived { pubkey, metadata } => {
                 // Cache latest profile metadata and refresh UI
-                let mut profiles = self.profiles.lock().await;
-                profiles.insert(pubkey, metadata);
-                drop(profiles);
-
+                self.profiles.cache(pubkey, metadata).await;
                 // Recompute current page to apply new labels
                 let _ = self.refresh_current_page().await;
             }
@@ -573,7 +572,7 @@ impl App {
                                 GroupId::from_slice(group_result.group.mls_group_id.as_slice());
                             self.navigate_to(PageType::Chat(Some(group_id))).await?;
                             // Ensure we track profile metadata for the peer
-                            self.ensure_profile_subscriptions(vec![other_pubkey]).await;
+                            let _ = self.profiles.ensure(&self.client, vec![other_pubkey]).await;
                         } else {
                             log::error!("No welcome rumor produced by storage.create_group");
                         }
@@ -900,54 +899,20 @@ impl App {
                         .find(|pk| **pk != me)
                         .cloned()
                     {
-                        let name = {
-                            let profiles = self.profiles.lock().await;
-                            profiles
-                                .get(&pk)
-                                .and_then(|meta| {
-                                    meta.display_name.clone().filter(|s| !s.is_empty())
-                                })
-                                .or_else(|| {
-                                    profiles.get(&pk).and_then(|meta| {
-                                        meta.name.clone().filter(|s| !s.is_empty())
-                                    })
-                                })
-                        };
+                        let name = self.profiles.display_name(&pk);
                         dms_to_subscribe.push(pk);
                         label = Some(name.unwrap_or_else(|| "loading".to_string()));
                     }
                 }
             }
             if let Some(pk) = messages.iter().map(|m| m.pubkey).find(|p| *p != me) {
-                let name = {
-                    let profiles = self.profiles.lock().await;
-                    profiles
-                        .get(&pk)
-                        .and_then(|meta| meta.display_name.clone().filter(|s| !s.is_empty()))
-                        .or_else(|| {
-                            profiles
-                                .get(&pk)
-                                .and_then(|meta| meta.name.clone().filter(|s| !s.is_empty()))
-                        })
-                };
+                let name = self.profiles.display_name(&pk);
                 dms_to_subscribe.push(pk);
                 label = Some(name.unwrap_or_else(|| "loading".to_string()));
             } else if let Some(rest) = group.name.strip_prefix("DM with ") {
                 if let Ok(pk) = PublicKey::from_bech32(rest.trim()) {
                     if pk != me {
-                        let name = {
-                            let profiles = self.profiles.lock().await;
-                            profiles
-                                .get(&pk)
-                                .and_then(|meta| {
-                                    meta.display_name.clone().filter(|s| !s.is_empty())
-                                })
-                                .or_else(|| {
-                                    profiles.get(&pk).and_then(|meta| {
-                                        meta.name.clone().filter(|s| !s.is_empty())
-                                    })
-                                })
-                        };
+                        let name = self.profiles.display_name(&pk);
                         dms_to_subscribe.push(pk);
                         label = Some(name.unwrap_or_else(|| "loading".to_string()));
                     }
@@ -964,7 +929,7 @@ impl App {
         }
 
         if !dms_to_subscribe.is_empty() {
-            let _ = self.ensure_profiles_available(dms_to_subscribe).await;
+            let _ = self.profiles.ensure(&self.client, dms_to_subscribe).await;
         }
 
         Ok(summaries)
@@ -983,7 +948,7 @@ impl App {
                 timestamp: Timestamp::now(),
             })
             .collect();
-        // Subscribe to profile metadata for all observed senders
+        // Ensure profile metadata for all observed senders
         let unique_senders: Vec<PublicKey> = {
             use std::collections::HashSet;
             let mut set = HashSet::new();
@@ -996,7 +961,7 @@ impl App {
             list
         };
         if !unique_senders.is_empty() {
-            let _ = self.ensure_profiles_available(unique_senders).await;
+            let _ = self.profiles.ensure(&self.client, unique_senders).await;
         }
         Ok(messages)
     }
@@ -1007,7 +972,7 @@ impl App {
             .get_group(group_id)?
             .ok_or_else(|| anyhow::anyhow!("Group not found"))?;
 
-        let _profiles = self.profiles.lock().await;
+        // Profiles handled via Profiles service; implement when we show members UI
         let members = vec![];
 
         Ok(members)
@@ -1107,8 +1072,7 @@ impl App {
 
         // Cache locally for immediate UI benefit
         if let Ok(meta) = Metadata::from_json(&event.content) {
-            let mut profiles = self.profiles.lock().await;
-            profiles.insert(self.keys.public_key(), meta);
+            self.profiles.cache(self.keys.public_key(), meta).await;
         }
         Ok(())
     }
@@ -1238,7 +1202,7 @@ impl App {
                 log::info!("Enqueued CreateDm op {op_id}");
                 let _ = self.ops_cmd_tx.send(OpsCommand::Wake);
                 // Ensure peer profile becomes available quickly
-                let _ = self.ensure_profiles_available(vec![other_pubkey]).await;
+                let _ = self.profiles.ensure(&self.client, vec![other_pubkey]).await;
             }
         }
 
@@ -1316,60 +1280,7 @@ impl App {
         Ok(())
     }
 
-    async fn ensure_profile_subscriptions(&self, pubkeys: Vec<PublicKey>) {
-        if pubkeys.is_empty() {
-            return;
-        }
-        let filter = Filter::new().kind(Kind::Metadata).authors(pubkeys);
-        if let Err(e) = self.client.subscribe(filter, None).await {
-            log::warn!("Failed to subscribe to profiles: {e}");
-        }
-    }
-
-    async fn ensure_profiles_available(&self, pubkeys: Vec<PublicKey>) -> Result<()> {
-        if pubkeys.is_empty() {
-            return Ok(());
-        }
-        // Always subscribe first
-        self.ensure_profile_subscriptions(pubkeys.clone()).await;
-
-        // Determine missing profiles
-        let missing: Vec<PublicKey> = {
-            let store = self.profiles.lock().await;
-            pubkeys
-                .into_iter()
-                .filter(|pk| !store.contains_key(pk))
-                .collect()
-        };
-
-        if missing.is_empty() {
-            return Ok(());
-        }
-
-        // One-shot fetch fallback for relays that don't replay on REQ
-        let filter = Filter::new().kind(Kind::Metadata).authors(missing);
-        match self
-            .client
-            .fetch_events(filter, std::time::Duration::from_secs(3))
-            .await
-        {
-            Ok(events) => {
-                if !events.is_empty() {
-                    let mut profiles = self.profiles.lock().await;
-                    for ev in events {
-                        if let Ok(meta) = Metadata::from_json(&ev.content) {
-                            profiles.insert(ev.pubkey, meta);
-                        }
-                    }
-                    drop(profiles);
-                    let _ = self.state_tx.send(self.current_page.clone());
-                }
-            }
-            Err(e) => log::warn!("fetch profiles failed: {e}"),
-        }
-
-        Ok(())
-    }
+    // Profiles logic now lives in profiles::Profiles service
 }
 
 // Outcomes that command processing can produce. UI layer decides how to present them.

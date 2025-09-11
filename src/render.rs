@@ -25,7 +25,7 @@ pub fn render(f: &mut Frame, app: &App) {
         } => {
             // Snapshot my pubkey and known profiles (non-blocking best-effort)
             let profiles_snapshot: Option<HashMap<PublicKey, Metadata>> =
-                app.profiles.try_lock().ok().map(|map| map.clone());
+                app.profiles.try_snapshot();
             render_chat(
                 f,
                 groups,
