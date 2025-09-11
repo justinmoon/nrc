@@ -62,7 +62,7 @@ mod tests {
         ));
         assert!(app.flash.is_some());
 
-        // First keystroke dismisses flash, doesn't add to input
+        // Any keystroke dismisses flash AND gets processed normally
         app.handle_event(AppEvent::KeyPress(KeyEvent::new(
             KeyCode::Char('a'),
             KeyModifiers::empty(),
@@ -71,10 +71,13 @@ mod tests {
         .unwrap();
         assert!(app.flash.is_none(), "Flash should be dismissed");
         if let Page::Chat { input, .. } = &app.current_page {
-            assert_eq!(input, "", "First keystroke consumed by flash");
+            assert_eq!(
+                input, "a",
+                "Character should be added (flash dismissal is just a side-effect)"
+            );
         }
 
-        // Second keystroke adds to input normally
+        // Next keystroke works normally
         app.handle_event(AppEvent::KeyPress(KeyEvent::new(
             KeyCode::Char('b'),
             KeyModifiers::empty(),
@@ -82,7 +85,7 @@ mod tests {
         .await
         .unwrap();
         if let Page::Chat { input, .. } = &app.current_page {
-            assert_eq!(input, "b", "Second keystroke should work normally");
+            assert_eq!(input, "ab", "Second keystroke should work normally");
         }
     }
 
@@ -114,7 +117,7 @@ mod tests {
             Instant::now() + Duration::from_secs(5),
         ));
 
-        // Next keystroke dismisses flash but doesn't modify input
+        // Next keystroke dismisses flash AND gets processed
         app.handle_event(AppEvent::KeyPress(KeyEvent::new(
             KeyCode::Char(' '),
             KeyModifiers::empty(),
@@ -124,7 +127,7 @@ mod tests {
 
         assert!(app.flash.is_none());
         if let Page::Chat { input, .. } = &app.current_page {
-            assert_eq!(input, "hi", "Space consumed by flash, input unchanged");
+            assert_eq!(input, "hi ", "Space should be added after dismissing flash");
         }
 
         // Now typing continues normally
@@ -135,7 +138,7 @@ mod tests {
         .await
         .unwrap();
         if let Page::Chat { input, .. } = &app.current_page {
-            assert_eq!(input, "hi!");
+            assert_eq!(input, "hi !");
         }
     }
 }

@@ -110,6 +110,14 @@ impl TestApp {
     }
 
     async fn send_key(&mut self, c: char) -> Result<()> {
+        // Debug: Check for flash before sending key
+        if self.app.flash.is_some() {
+            println!("WARNING: Flash message active before sending key '{c}'");
+            println!(
+                "Flash content: {:?}",
+                self.app.flash.as_ref().map(|(msg, _)| msg)
+            );
+        }
         let event = AppEvent::KeyPress(KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty()));
         self.app.handle_event(event).await
     }

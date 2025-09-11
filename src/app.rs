@@ -544,11 +544,11 @@ impl App {
     async fn handle_keypress(&mut self, key_event: crossterm::event::KeyEvent) -> Result<()> {
         use crossterm::event::{KeyCode, KeyModifiers};
 
-        // Dismiss flash message on any keystroke
+        // Dismiss flash message on any keystroke (as a side-effect)
+        // But continue processing the keystroke normally
         if self.flash.is_some() {
             self.flash = None;
             let _ = self.state_tx.send(self.current_page.clone());
-            return Ok(());
         }
 
         // Extract necessary data first to avoid borrowing conflicts
