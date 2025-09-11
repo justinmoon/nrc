@@ -1,3 +1,7 @@
+# Default recipe (show available commands)
+default:
+    @just --list
+
 # Run all CI checks
 ci: fmt-check clippy test
     @echo "All CI checks passed! (100% confidence)"
@@ -27,30 +31,7 @@ act-ci fresh='':
         ./scripts/act-ci.sh
     fi
 
-# Get fresh client by name (resets tmpdir)
-fresh name *args='':
-    #!/bin/bash
-    set -e
-    tmpdir="/tmp/nrc-stable-{{name}}"
-    rm -rf "${tmpdir}" 2>/dev/null || true
-    mkdir -p "${tmpdir}"
-    echo "Fresh client '{{name}}' at ${tmpdir} (100% confidence)"
-    cargo run -- --datadir "${tmpdir}" {{args}}
+# Run a client (use --wipe for fresh, --skip-onboarding to skip)
+run *args='':
+    cargo run -- {{args}}
 
-# Rerun existing client by name (preserves tmpdir)
-rerun name *args='':
-    #!/bin/bash
-    set -e
-    tmpdir="/tmp/nrc-stable-{{name}}"
-    if [[ ! -d "${tmpdir}" ]]; then
-        mkdir -p "${tmpdir}"
-        echo "Creating new client '{{name}}' at ${tmpdir} (100% confidence)"
-    else
-        echo "Reusing client '{{name}}' at ${tmpdir} (100% confidence)"
-    fi
-    cargo run -- --datadir "${tmpdir}" {{args}}
-
-
-# Default recipe (show available commands)
-default:
-    @just --list

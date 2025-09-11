@@ -50,6 +50,14 @@ struct Args {
     /// Watch operations dashboard mode
     #[arg(long, default_value_t = false)]
     watch_ops: bool,
+    /// Skip onboarding and use default credentials (debug builds only)
+    #[cfg(debug_assertions)]
+    #[arg(long)]
+    skip_onboarding: bool,
+    /// Wipe the data directory before starting (debug builds only)
+    #[cfg(debug_assertions)]
+    #[arg(long)]
+    wipe: bool,
 }
 
 fn setup_logging(datadir: &PathBuf) -> Result<()> {
@@ -103,6 +111,17 @@ async fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
+    #[cfg(debug_assertions)]
+    {
+        if args.wipe {
+            log::info!("Wiping data directory: {:?}", args.datadir);
+            let _ = fs::remove_dir_all(&args.datadir);
+        }
+    }
+    
+    #[cfg(debug_assertions)]
+    let res = run_app(&mut terminal, &args.datadir, args.watch_ops, args.skip_onboarding).await;
+    #[cfg(not(debug_assertions))]
     let res = run_app(&mut terminal, &args.datadir, args.watch_ops).await;
 
     disable_raw_mode()?;
@@ -124,6 +143,7 @@ async fn run_app<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     datadir: &Path,
     watch_ops: bool,
+    #[cfg(debug_assertions)] skip_onboarding: bool,
 ) -> Result<()> {
     use nostr_sdk::prelude::*;
     use nrc::config::get_default_relays;
@@ -141,26 +161,95 @@ async fn run_app<B: ratatui::backend::Backend>(
                 selected: 0,
             },
         )
-    } else if key_storage.keys_exist() {
-        let keys = Keys::generate();
-        (
-            keys,
-            Page::Onboarding {
-                input: String::new(),
-                mode: OnboardingMode::EnterPassword,
-                error: None,
-            },
-        )
     } else {
-        let keys = Keys::generate();
-        (
-            keys,
-            Page::Onboarding {
-                input: String::new(),
-                mode: OnboardingMode::Choose,
-                error: None,
-            },
-        )
+        #[cfg(debug_assertions)]
+        if skip_onboarding {
+            // Dev mode: auto-create/load account with default password
+            let password = "password";
+            let (keys, page) = if key_storage.keys_exist() {
+                // Try to load existing keys
+                match key_storage.load_encrypted(password) {
+                    Ok(loaded_keys) => {
+                        log::info!("Dev mode: loaded existing keys with --skip-onboarding");
+                        (
+                            loaded_keys,
+                            Page::Initializing {
+                                message: "Loading...".to_string(),
+                                progress: 0.0,
+                            },
+                        )
+                    }
+                    Err(_) => {
+                        // Wrong password or corrupted, generate new
+                        let new_keys = Keys::generate();
+                        key_storage.save_encrypted(&new_keys, password)?;
+                        log::info!("Dev mode: created new keys with --skip-onboarding");
+                        (
+                            new_keys,
+                            Page::Initializing {
+                                message: "Loading...".to_string(),
+                                progress: 0.0,
+                            },
+                        )
+                    }
+                }
+            } else {
+                // No keys exist, create new
+                let new_keys = Keys::generate();
+                key_storage.save_encrypted(&new_keys, password)?;
+                log::info!("Dev mode: created new keys with --skip-onboarding");
+                (
+                    new_keys,
+                    Page::Initializing {
+                        message: "Loading...".to_string(),
+                        progress: 0.0,
+                    },
+                )
+            };
+            (keys, page)
+        } else if key_storage.keys_exist() {
+            let keys = Keys::generate();
+            (
+                keys,
+                Page::Onboarding {
+                    input: String::new(),
+                    mode: OnboardingMode::EnterPassword,
+                    error: None,
+                },
+            )
+        } else {
+            let keys = Keys::generate();
+            (
+                keys,
+                Page::Onboarding {
+                    input: String::new(),
+                    mode: OnboardingMode::Choose,
+                    error: None,
+                },
+            )
+        }
+        #[cfg(not(debug_assertions))]
+        if key_storage.keys_exist() {
+            let keys = Keys::generate();
+            (
+                keys,
+                Page::Onboarding {
+                    input: String::new(),
+                    mode: OnboardingMode::EnterPassword,
+                    error: None,
+                },
+            )
+        } else {
+            let keys = Keys::generate();
+            (
+                keys,
+                Page::Onboarding {
+                    input: String::new(),
+                    mode: OnboardingMode::Choose,
+                    error: None,
+                },
+            )
+        }
     };
 
     let client = Client::builder().signer(keys.clone()).build();
