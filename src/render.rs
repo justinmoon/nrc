@@ -155,19 +155,6 @@ pub fn render_chat(
         .split(size);
 
     // Render groups sidebar with "CHATS" header
-    let groups_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // Header
-            Constraint::Min(0),    // Groups list
-        ])
-        .split(main_chunks[0]);
-
-    let groups_header = Paragraph::new("CHATS")
-        .style(Style::default().fg(Color::DarkGray))
-        .block(Block::default().borders(Borders::ALL));
-    f.render_widget(groups_header, groups_chunks[0]);
-
     // Render group list
     let group_items: Vec<ListItem> = groups
         .iter()
@@ -182,8 +169,9 @@ pub fn render_chat(
         })
         .collect();
 
-    let groups_list = List::new(group_items).block(Block::default().borders(Borders::ALL));
-    f.render_widget(groups_list, groups_chunks[1]);
+    let groups_list =
+        List::new(group_items).block(Block::default().borders(Borders::ALL).title("CHATS"));
+    f.render_widget(groups_list, main_chunks[0]);
 
     // Calculate flash message height if present
     let flash_height = if let Some((msg, expiry)) = flash {
@@ -237,7 +225,6 @@ pub fn render_chat(
         Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3),      // Header "CHAT"
                 Constraint::Min(0),         // Messages area
                 Constraint::Length(height), // Dynamic flash message area
                 Constraint::Length(3),      // Input area with "INPUT" label
@@ -247,24 +234,18 @@ pub fn render_chat(
         Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3), // Header "CHAT"
                 Constraint::Min(0),    // Messages area
                 Constraint::Length(3), // Input area with "INPUT" label
             ])
             .split(main_chunks[1])
     };
 
-    // Render chat header
-    let chat_header = Paragraph::new("CHAT")
-        .style(Style::default().fg(Color::DarkGray))
-        .block(Block::default().borders(Borders::ALL));
-    f.render_widget(chat_header, chat_chunks[0]);
-
     // Render messages
+    let messages_area_index = 0;
     let visible_messages = messages
         .iter()
         .skip(scroll_offset)
-        .take(chat_chunks[1].height as usize - 2);
+        .take(chat_chunks[messages_area_index].height as usize - 2);
 
     let message_lines: Vec<Line> = visible_messages
         .map(|msg| {
@@ -280,14 +261,14 @@ pub fn render_chat(
         .collect();
 
     let messages_widget =
-        Paragraph::new(message_lines).block(Block::default().borders(Borders::ALL));
-    f.render_widget(messages_widget, chat_chunks[1]);
+        Paragraph::new(message_lines).block(Block::default().borders(Borders::ALL).title("CHAT"));
+    f.render_widget(messages_widget, chat_chunks[messages_area_index]);
 
     // Render flash message if active
     if flash_height.is_some() {
         if let Some((msg, _)) = flash {
             // Manually wrap text to fit the available width
-            let available_width = chat_chunks[2].width.saturating_sub(2) as usize; // Account for borders
+            let available_width = chat_chunks[1].width.saturating_sub(2) as usize; // Account for borders
             let mut wrapped_lines = Vec::new();
 
             // Split message into words and rebuild lines that fit
@@ -352,12 +333,12 @@ pub fn render_chat(
             }
 
             let flash_widget = Paragraph::new(wrapped_lines);
-            f.render_widget(flash_widget, chat_chunks[2]);
+            f.render_widget(flash_widget, chat_chunks[1]);
         }
     }
 
     // Render input area with "INPUT" label
-    let input_index = if flash_height.is_some() { 3 } else { 2 };
+    let input_index = if flash_height.is_some() { 2 } else { 1 };
     let input_widget = Paragraph::new(input)
         .style(Style::default())
         .block(Block::default().borders(Borders::ALL).title("INPUT"));
