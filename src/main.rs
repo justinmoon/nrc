@@ -118,9 +118,15 @@ async fn main() -> Result<()> {
             let _ = fs::remove_dir_all(&args.datadir);
         }
     }
-    
+
     #[cfg(debug_assertions)]
-    let res = run_app(&mut terminal, &args.datadir, args.watch_ops, args.skip_onboarding).await;
+    let res = run_app(
+        &mut terminal,
+        &args.datadir,
+        args.watch_ops,
+        args.skip_onboarding,
+    )
+    .await;
     #[cfg(not(debug_assertions))]
     let res = run_app(&mut terminal, &args.datadir, args.watch_ops).await;
 
