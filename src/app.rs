@@ -520,8 +520,8 @@ impl App {
                 profiles.insert(pubkey, metadata);
                 drop(profiles);
 
-                // Trigger a re-render if we're on a chat or list
-                let _ = self.state_tx.send(self.current_page.clone());
+                // Recompute current page to apply new labels
+                let _ = self.refresh_current_page().await;
             }
             AppEvent::OpNeedsStorageCreateGroup {
                 op_id,
@@ -886,10 +886,10 @@ impl App {
             });
 
             // Compute a safe UI label for DMs:
-            // - If we can infer peer from any admin entry not me, use that npub
+            // - If we can infer peer from any admin entry not me, use that pk
             // - Else, infer from any message not sent by me
             // - Else, if the stored name is "DM with <npub>" and that npub != me, use it
-            // - Else, show "loading" until we learn the peer (never show my own name)
+            // - Label is the peer's display name if cached, otherwise "loading" (never show my own name)
             let me = self.keys.public_key();
             let mut label: Option<String> = None;
             if label.is_none() {
@@ -900,22 +900,56 @@ impl App {
                         .find(|pk| **pk != me)
                         .cloned()
                     {
-                        let npub = pk.to_bech32().unwrap_or_else(|_| pk.to_hex());
+                        let name = {
+                            let profiles = self.profiles.lock().await;
+                            profiles
+                                .get(&pk)
+                                .and_then(|meta| {
+                                    meta.display_name.clone().filter(|s| !s.is_empty())
+                                })
+                                .or_else(|| {
+                                    profiles.get(&pk).and_then(|meta| {
+                                        meta.name.clone().filter(|s| !s.is_empty())
+                                    })
+                                })
+                        };
                         dms_to_subscribe.push(pk);
-                        label = Some(npub);
+                        label = Some(name.unwrap_or_else(|| "loading".to_string()));
                     }
                 }
             }
             if let Some(pk) = messages.iter().map(|m| m.pubkey).find(|p| *p != me) {
-                let npub = pk.to_bech32().unwrap_or_else(|_| pk.to_hex());
+                let name = {
+                    let profiles = self.profiles.lock().await;
+                    profiles
+                        .get(&pk)
+                        .and_then(|meta| meta.display_name.clone().filter(|s| !s.is_empty()))
+                        .or_else(|| {
+                            profiles
+                                .get(&pk)
+                                .and_then(|meta| meta.name.clone().filter(|s| !s.is_empty()))
+                        })
+                };
                 dms_to_subscribe.push(pk);
-                label = Some(npub);
+                label = Some(name.unwrap_or_else(|| "loading".to_string()));
             } else if let Some(rest) = group.name.strip_prefix("DM with ") {
                 if let Ok(pk) = PublicKey::from_bech32(rest.trim()) {
                     if pk != me {
-                        let npub = pk.to_bech32().unwrap_or_else(|_| pk.to_hex());
+                        let name = {
+                            let profiles = self.profiles.lock().await;
+                            profiles
+                                .get(&pk)
+                                .and_then(|meta| {
+                                    meta.display_name.clone().filter(|s| !s.is_empty())
+                                })
+                                .or_else(|| {
+                                    profiles.get(&pk).and_then(|meta| {
+                                        meta.name.clone().filter(|s| !s.is_empty())
+                                    })
+                                })
+                        };
                         dms_to_subscribe.push(pk);
-                        label = Some(npub);
+                        label = Some(name.unwrap_or_else(|| "loading".to_string()));
                     }
                 }
             }

@@ -703,12 +703,17 @@ async fn test_dm_label_never_own_name_and_loading_ok() -> Result<()> {
         "Bottom must not see their own name as DM label"
     );
 
-    // After some messages, labels should resolve away from own name as well
+    // After some messages, labels should resolve to peer display names
     top.send_message("hello").await?;
     tokio::time::sleep(Duration::from_millis(800)).await;
     top.process_incoming_messages().await?;
     bottom.process_incoming_messages().await?;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Wait a bit longer for profile metadata and refreshes to land
+    for _ in 0..10 {
+        top.process_incoming_messages().await?;
+        bottom.process_incoming_messages().await?;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
 
     let top_label_after = match &top.app.current_page {
         Page::Chat { groups, .. } if !groups.is_empty() => groups[0].name.clone(),
@@ -719,13 +724,13 @@ async fn test_dm_label_never_own_name_and_loading_ok() -> Result<()> {
         _ => String::new(),
     };
 
-    assert_ne!(
-        top_label_after, "top",
-        "Top label must not regress to own name"
+    assert_eq!(
+        top_label_after, "bottom",
+        "Top should label chat as peer display name"
     );
-    assert_ne!(
-        bottom_label_after, "bottom",
-        "Bottom label must not regress to own name"
+    assert_eq!(
+        bottom_label_after, "top",
+        "Bottom should label chat as peer display name"
     );
 
     Ok(())
