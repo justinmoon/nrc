@@ -1,3 +1,4 @@
+// renamed from critical_flows.rs
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use nostr_sdk::prelude::*;
