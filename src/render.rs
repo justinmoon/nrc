@@ -161,19 +161,6 @@ fn render_chat(
         .split(size);
 
     // Render groups sidebar with "CHATS" header
-    let groups_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // Header
-            Constraint::Min(0),    // Groups list
-        ])
-        .split(main_chunks[0]);
-
-    let groups_header = Paragraph::new("CHATS")
-        .style(Style::default().fg(Color::DarkGray))
-        .block(Block::default().borders(Borders::ALL));
-    f.render_widget(groups_header, groups_chunks[0]);
-
     // Render group list
     let group_items: Vec<ListItem> = groups
         .iter()
@@ -188,25 +175,19 @@ fn render_chat(
         })
         .collect();
 
-    let groups_list = List::new(group_items).block(Block::default().borders(Borders::ALL));
-    f.render_widget(groups_list, groups_chunks[1]);
+    let groups_list =
+        List::new(group_items).block(Block::default().borders(Borders::ALL).title("CHATS"));
+    f.render_widget(groups_list, main_chunks[0]);
 
     // Split chat area vertically
     let chat_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // Header "CHAT"
             Constraint::Min(0),    // Messages area
             Constraint::Length(2), // Flash/error area (hidden when not used)
             Constraint::Length(3), // Input area with "INPUT" label
         ])
         .split(main_chunks[1]);
-
-    // Render chat header
-    let chat_header = Paragraph::new("CHAT")
-        .style(Style::default().fg(Color::DarkGray))
-        .block(Block::default().borders(Borders::ALL));
-    f.render_widget(chat_header, chat_chunks[0]);
 
     // Render messages
     let visible_messages = messages
@@ -228,8 +209,8 @@ fn render_chat(
         .collect();
 
     let messages_widget =
-        Paragraph::new(message_lines).block(Block::default().borders(Borders::ALL));
-    f.render_widget(messages_widget, chat_chunks[1]);
+        Paragraph::new(message_lines).block(Block::default().borders(Borders::ALL).title("CHAT"));
+    f.render_widget(messages_widget, chat_chunks[0]);
 
     // Render flash/error area if there's a message
     if let Some((msg, expiry)) = flash {
@@ -237,7 +218,7 @@ fn render_chat(
             let flash_widget = Paragraph::new(msg.as_str())
                 .style(Style::default().fg(Color::Yellow))
                 .block(Block::default().borders(Borders::ALL));
-            f.render_widget(flash_widget, chat_chunks[2]);
+            f.render_widget(flash_widget, chat_chunks[1]);
         }
     }
 
@@ -245,7 +226,7 @@ fn render_chat(
     let input_widget = Paragraph::new(input)
         .style(Style::default())
         .block(Block::default().borders(Borders::ALL).title("INPUT"));
-    f.render_widget(input_widget, chat_chunks[3]);
+    f.render_widget(input_widget, chat_chunks[2]);
 }
 
 fn render_help(f: &mut Frame, _selected_section: usize) {
