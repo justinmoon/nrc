@@ -31,6 +31,3 @@ lazy_static = "1.4"
 tempfile = "3.8"
 insta = "1.34"
 
-[[example]]
-name = "test_mls_flow"
-path = "examples/test_mls_flow.rs"

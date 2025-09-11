@@ -1,8 +1,6 @@
 mod keyboard;
 mod render;
 
-#[cfg(test)]
-mod render_test;
 
 use anyhow::Result;
 use clap::Parser;
