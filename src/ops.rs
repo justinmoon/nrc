@@ -301,12 +301,7 @@ pub fn spawn_orchestrator(
                             tokio::task::spawn_blocking(move || {
                                 let storage = KeyStorage::new(&datadir_clone);
                                 match storage.save_encrypted(&keys_clone, &password) {
-                                    Ok(_) => {
-                                        let _ = event_tx_clone.send(AppEvent::FlashMessage(
-                                            "Encrypted keys saved".to_string(),
-                                            std::time::Duration::from_secs(3),
-                                        ));
-                                    }
+                                    Ok(_) => {}
                                     Err(e) => {
                                         log::error!("Failed to save encrypted keys: {e}");
                                         let _ = event_tx_clone.send(AppEvent::FlashMessage(
