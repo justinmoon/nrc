@@ -44,6 +44,9 @@ pub struct App {
     // Persistent operations orchestrator
     pub ops_store: OpsStore,
     pub ops_cmd_tx: mpsc::UnboundedSender<OpsCommand>,
+
+    // Onboarding: hold display name until we can publish profile
+    pending_display_name: Option<String>,
 }
 
 impl App {
@@ -113,6 +116,7 @@ impl App {
             welcome_rumors: Arc::new(Mutex::new(HashMap::new())),
             ops_store,
             ops_cmd_tx,
+            pending_display_name: None,
         })
     }
 
@@ -475,6 +479,10 @@ impl App {
                                                 sender: msg.pubkey,
                                                 timestamp: msg.created_at,
                                             });
+                                            // Make sure we have their profile metadata (subscribe + fetch fallback)
+                                            let _ = self
+                                                .ensure_profiles_available(vec![msg.pubkey])
+                                                .await;
                                             let _ = self.state_tx.send(self.current_page.clone());
                                         }
                                     }
@@ -505,6 +513,15 @@ impl App {
                     "Received key package from {} via subscription",
                     event.pubkey.to_bech32().unwrap_or_default()
                 );
+            }
+            AppEvent::ProfileMetadataReceived { pubkey, metadata } => {
+                // Cache latest profile metadata and refresh UI
+                let mut profiles = self.profiles.lock().await;
+                profiles.insert(pubkey, metadata);
+                drop(profiles);
+
+                // Trigger a re-render if we're on a chat or list
+                let _ = self.state_tx.send(self.current_page.clone());
             }
             AppEvent::OpNeedsStorageCreateGroup {
                 op_id,
@@ -555,6 +572,8 @@ impl App {
                             let group_id =
                                 GroupId::from_slice(group_result.group.mls_group_id.as_slice());
                             self.navigate_to(PageType::Chat(Some(group_id))).await?;
+                            // Ensure we track profile metadata for the peer
+                            self.ensure_profile_subscriptions(vec![other_pubkey]).await;
                         } else {
                             log::error!("No welcome rumor produced by storage.create_group");
                         }
@@ -767,6 +786,8 @@ impl App {
             },
             OnboardingMode::EnterDisplayName => {
                 if !input.trim().is_empty() {
+                    // Stash desired display name to publish after keys are set and we connect
+                    self.pending_display_name = Some(input.trim().to_string());
                     let new_page = Page::Onboarding {
                         input: String::new(),
                         mode: OnboardingMode::CreatePassword,
@@ -788,6 +809,8 @@ impl App {
 
                                 // Initialize MLS and publish key package
                                 self.publish_key_package().await?;
+                                // Publish profile if we captured a display name
+                                self.publish_profile_name_if_needed().await?;
 
                                 // Navigate to chat and clear history - no going back from here
                                 self.navigate_to(PageType::Chat(None)).await?;
@@ -817,6 +840,8 @@ impl App {
 
                         // Initialize MLS and publish key package
                         self.publish_key_package().await?;
+                        // Publish profile if we captured a display name
+                        self.publish_profile_name_if_needed().await?;
 
                         // Navigate to chat and clear history - no going back from here
                         self.navigate_to(PageType::Chat(None)).await?;
@@ -849,6 +874,7 @@ impl App {
     async fn load_group_summaries(&self) -> Result<Vec<GroupSummary>> {
         let groups = self.storage.get_groups()?;
         let mut summaries = Vec::new();
+        let mut dms_to_subscribe: Vec<PublicKey> = Vec::new();
 
         for group in groups {
             let id = group.mls_group_id.clone();
@@ -859,13 +885,52 @@ impl App {
                 timestamp: Timestamp::now(),
             });
 
+            // Compute a safe UI label for DMs:
+            // - If we can infer peer from any admin entry not me, use that npub
+            // - Else, infer from any message not sent by me
+            // - Else, if the stored name is "DM with <npub>" and that npub != me, use it
+            // - Else, show "loading" until we learn the peer (never show my own name)
+            let me = self.keys.public_key();
+            let mut label: Option<String> = None;
+            if label.is_none() {
+                if let Some(full_group) = self.storage.get_group(&id)? {
+                    if let Some(pk) = full_group
+                        .admin_pubkeys
+                        .iter()
+                        .find(|pk| **pk != me)
+                        .cloned()
+                    {
+                        let npub = pk.to_bech32().unwrap_or_else(|_| pk.to_hex());
+                        dms_to_subscribe.push(pk);
+                        label = Some(npub);
+                    }
+                }
+            }
+            if let Some(pk) = messages.iter().map(|m| m.pubkey).find(|p| *p != me) {
+                let npub = pk.to_bech32().unwrap_or_else(|_| pk.to_hex());
+                dms_to_subscribe.push(pk);
+                label = Some(npub);
+            } else if let Some(rest) = group.name.strip_prefix("DM with ") {
+                if let Ok(pk) = PublicKey::from_bech32(rest.trim()) {
+                    if pk != me {
+                        let npub = pk.to_bech32().unwrap_or_else(|_| pk.to_hex());
+                        dms_to_subscribe.push(pk);
+                        label = Some(npub);
+                    }
+                }
+            }
+
             summaries.push(GroupSummary {
                 id,
-                name: group.name.clone(),
+                name: label.unwrap_or_else(|| "loading".to_string()),
                 member_count: 0,
                 last_message,
                 unread_count: 0,
             });
+        }
+
+        if !dms_to_subscribe.is_empty() {
+            let _ = self.ensure_profiles_available(dms_to_subscribe).await;
         }
 
         Ok(summaries)
@@ -884,6 +949,21 @@ impl App {
                 timestamp: Timestamp::now(),
             })
             .collect();
+        // Subscribe to profile metadata for all observed senders
+        let unique_senders: Vec<PublicKey> = {
+            use std::collections::HashSet;
+            let mut set = HashSet::new();
+            let mut list = Vec::new();
+            for msg in &messages {
+                if set.insert(msg.sender) {
+                    list.push(msg.sender);
+                }
+            }
+            list
+        };
+        if !unique_senders.is_empty() {
+            let _ = self.ensure_profiles_available(unique_senders).await;
+        }
         Ok(messages)
     }
 
@@ -968,6 +1048,34 @@ impl App {
         let op_id = self.ops_store.enqueue(kind)?;
         log::info!("Enqueued key package publish op {op_id}");
         let _ = self.ops_cmd_tx.send(OpsCommand::Wake);
+        Ok(())
+    }
+
+    async fn publish_profile_name_if_needed(&mut self) -> Result<()> {
+        let Some(name) = self.pending_display_name.take() else {
+            return Ok(());
+        };
+        let content = serde_json::json!({
+            "name": name,
+            "display_name": name,
+        })
+        .to_string();
+
+        let event = EventBuilder::new(Kind::Metadata, content)
+            .build(self.keys.public_key())
+            .sign(&self.keys)
+            .await?;
+
+        // Publish directly
+        if let Err(e) = self.client.send_event(&event).await {
+            log::warn!("Failed to publish profile: {e}");
+        }
+
+        // Cache locally for immediate UI benefit
+        if let Ok(meta) = Metadata::from_json(&event.content) {
+            let mut profiles = self.profiles.lock().await;
+            profiles.insert(self.keys.public_key(), meta);
+        }
         Ok(())
     }
 
@@ -1095,6 +1203,8 @@ impl App {
                     .context("Failed to enqueue CreateDm operation")?;
                 log::info!("Enqueued CreateDm op {op_id}");
                 let _ = self.ops_cmd_tx.send(OpsCommand::Wake);
+                // Ensure peer profile becomes available quickly
+                let _ = self.ensure_profiles_available(vec![other_pubkey]).await;
             }
         }
 
@@ -1167,6 +1277,61 @@ impl App {
         } else {
             self.current_page = refreshed.clone();
             let _ = self.state_tx.send(refreshed);
+        }
+
+        Ok(())
+    }
+
+    async fn ensure_profile_subscriptions(&self, pubkeys: Vec<PublicKey>) {
+        if pubkeys.is_empty() {
+            return;
+        }
+        let filter = Filter::new().kind(Kind::Metadata).authors(pubkeys);
+        if let Err(e) = self.client.subscribe(filter, None).await {
+            log::warn!("Failed to subscribe to profiles: {e}");
+        }
+    }
+
+    async fn ensure_profiles_available(&self, pubkeys: Vec<PublicKey>) -> Result<()> {
+        if pubkeys.is_empty() {
+            return Ok(());
+        }
+        // Always subscribe first
+        self.ensure_profile_subscriptions(pubkeys.clone()).await;
+
+        // Determine missing profiles
+        let missing: Vec<PublicKey> = {
+            let store = self.profiles.lock().await;
+            pubkeys
+                .into_iter()
+                .filter(|pk| !store.contains_key(pk))
+                .collect()
+        };
+
+        if missing.is_empty() {
+            return Ok(());
+        }
+
+        // One-shot fetch fallback for relays that don't replay on REQ
+        let filter = Filter::new().kind(Kind::Metadata).authors(missing);
+        match self
+            .client
+            .fetch_events(filter, std::time::Duration::from_secs(3))
+            .await
+        {
+            Ok(events) => {
+                if !events.is_empty() {
+                    let mut profiles = self.profiles.lock().await;
+                    for ev in events {
+                        if let Ok(meta) = Metadata::from_json(&ev.content) {
+                            profiles.insert(ev.pubkey, meta);
+                        }
+                    }
+                    drop(profiles);
+                    let _ = self.state_tx.send(self.current_page.clone());
+                }
+            }
+            Err(e) => log::warn!("fetch profiles failed: {e}"),
         }
 
         Ok(())
